@@ -18,6 +18,8 @@ df[char_cols] <- lapply(df[char_cols], function(x) {
 
 df$enhanced_severity_collision[df$enhanced_severity_collision == -1] <- NA
 
+df$junction_detail[df$junction_detail == "19"] <- "Other (unknown code)"
+
 df$enhanced_severity_collision <- as.character(df$enhanced_severity_collision)
 
 df$date <- as.Date(df$date, format = "%d/%m/%Y")
