@@ -18,7 +18,7 @@ df[char_cols] <- lapply(df[char_cols], function(x) {
 
 df$enhanced_severity_collision[df$enhanced_severity_collision == -1] <- NA
 
-df$junction_detail[df$junction_detail == "19"] <- "Other (unknown code)"
+df$junction_detail[df$junction_detail == "19"] <- NA
 
 df$enhanced_severity_collision <- as.character(df$enhanced_severity_collision)
 
