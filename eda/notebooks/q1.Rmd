@@ -1,0 +1,137 @@
+---
+title: "Лабораторна робота №1 — Питання 1"
+author: "Варвара"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(lubridate)
+library(ggridges) 
+library(knitr)   
+library(GGally)  
+
+# Завантаження даних
+data_path <- "../../data/processed/collisions_2024_cleaned.csv"
+df <- read_csv(data_path)
+```
+1. Опис даних та підготовка (Data Cleaning)
+Перш ніж приступати до аналізу Питання 1, проведемо перевірку якості даних та необхідні трансформації.
+
+Крок 1: Перевірка на пропущені дані (Missing Values)
+Відповідно до вимог, перевіряємо змінні, що будуть використані.
+
+```{r}
+df %>% 
+  select(time, day_of_week, collision_severity, number_of_casualties) %>% 
+  summarise(across(everything(), ~sum(is.na(.)))) %>% 
+  kable(caption = "Таблиця 1.1: Кількість пропущених значень")
+```
+
+Крок 2: Трансформація змінних
+Створюємо похідні змінні для аналізу часових проміжків.
+
+```{r}
+df <- df %>%
+  mutate(
+    hour = hour(time),
+    day_of_week = factor(day_of_week, 
+                         levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")),
+    day_type = ifelse(day_of_week %in% c("Saturday", "Sunday"), "Вихідні", "Робочі дні"),
+    # Перетворюємо тяжкість у фактор з назвами (для кращої візуалізації)
+    severity = factor(collision_severity, labels = c("Fatal", "Serious", "Slight"))
+  )
+```
+
+2. Дескриптивні статистики (Requirement 1.2.1)
+Наведемо основні статистичні показники для числових змінних, що стосуються Питання 1.
+
+```{r}
+df %>% 
+  summarise(across(c(hour, number_of_casualties), 
+                   list(mean = ~mean(., na.rm = TRUE), 
+                        median = ~median(., na.rm = TRUE), 
+                        sd = ~sd(., na.rm = TRUE), 
+                        min = ~min(., na.rm = TRUE), 
+                        max = ~max(., na.rm = TRUE)))) %>% 
+  pivot_longer(everything(), names_to = "Показник", values_to = "Значення") %>%
+  kable(caption = "Таблиця 1.2: Дескриптивні статистики (Година та постраждалі)")
+```
+
+3. Кореляційний аналіз (Requirement 1.1)
+Перевіримо, чи є зв'язок між годиною доби та кількістю постраждалих.
+
+```{r}
+cor_res <- cor(df$hour, df$number_of_casualties, method = "spearman")
+
+df %>% 
+  select(hour, number_of_casualties, speed_limit) %>% 
+  ggcorr(label = TRUE, method = c("pairwise", "spearman")) +
+  labs(title = "Матриця кореляцій (Spearman)")
+```
+
+4. Розвідковий аналіз (EDA)
+Графік 1.1: Розподіл ДТП протягом доби (1D візуалізація)
+
+```{r}
+ggplot(df, aes(x = hour)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "white") +
+  scale_x_continuous(breaks = 0:23) +
+  labs(title = "Загальний розподіл аварій по годинах", 
+       subtitle = "Спостерігається вечірній пік о 16:00-17:00",
+       x = "Година", y = "Кількість ДТП") +
+  theme_minimal()
+```
+
+Графік 1.2: Порівняння щільності ДТП (Будні vs Вихідні)
+Це класичний Density Plot, який ідеально показує зміщення піків
+
+```{r}
+ggplot(df, aes(x = hour, fill = day_type)) +
+  geom_density(alpha = 0.5) + # alpha робить кольори прозорими, щоб було видно перетин
+  scale_fill_manual(values = c("Вихідні" = "#fc8d62", "Робочі дні" = "#8da0cb")) +
+  labs(title = "Графік 1.2: Порівняння годин пік", 
+       subtitle = "На робочі дні чітко видно ранковий пік (8:00), якого немає на вихідних",
+       x = "Година доби", y = "Щільність (Density)", fill = "Тип дня") +
+  theme_minimal()
+```
+
+Графік 1.3: Ridgeline Plot по днях тижня (Advanced Visualization)
+Це просунутий тип графіку, якого не було в Лекції 1.
+
+```{r}
+ggplot(df, aes(x = hour, y = day_of_week, fill = day_type)) +
+  geom_density_ridges(alpha = 0.6) +
+  scale_fill_manual(values = c("Вихідні" = "#E74C3C", "Робочі дні" = "#3498DB")) +
+  labs(title = "Щільність розподілу ДТП по днях тижня", 
+       x = "Година", y = "День тижня", fill = "Тип дня") +
+  theme_ridges()
+```
+
+Графік 1.4: Теплова карта (Multi-variable Heatmap)
+
+```{r}
+df %>%
+  count(day_of_week, hour) %>%
+  ggplot(aes(x = day_of_week, y = hour, fill = n)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "magma") +
+  scale_y_reverse(breaks = 0:23) +
+  labs(title = "Теплова карта аварійності", 
+       x = "День тижня", y = "Година (зворотна шкала)", fill = "К-ть ДТП") +
+  theme_minimal()
+```
+
+Графік 1.5: Тяжкість наслідків та трансформація осей (Log Scale)
+Вимога 1.1: Трансформація осей для ліпшої візуалізації.
+
+```{r}
+ggplot(df, aes(x = hour, fill = severity)) +
+  geom_bar(position = "stack") +
+  scale_y_log10() +
+  labs(title = "Тяжкість наслідків по годинах (Log10 шкала)", 
+       subtitle = "Логарифмування дозволяє краще бачити категорії Fatal та Serious",
+       x = "Година", y = "Кількість (log10)") +
+  theme_light()
+```
