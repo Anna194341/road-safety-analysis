@@ -1,0 +1,167 @@
+---
+title: "ЛР №1 — Питання 6 (Місто vs Село) — Виправлена версія"
+author: "Варвара"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(scales)
+library(knitr)
+library(GGally)
+
+data_path <- "../../data/processed/collisions_2024_cleaned.csv"
+df_raw <- read_csv(data_path)
+```
+
+1. ПІДГОТОВКА ДАНИХ
+
+```{r}
+df_q6 <- df_raw %>%
+  mutate(
+    area_type = case_when(
+      urban_or_rural_area %in% c(1, "1", "Urban") ~ "Urban",
+      urban_or_rural_area %in% c(2, "2", "Rural") ~ "Rural",
+      TRUE ~ "Unknown"
+    ),
+    severity = case_when(
+      collision_severity %in% c(1, "1", "Fatal") ~ "Fatal",
+      collision_severity %in% c(2, "2", "Serious") ~ "Serious",
+      collision_severity %in% c(3, "3", "Slight") ~ "Slight",
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  filter(area_type != "Unknown") %>%
+  mutate(
+    area_type = factor(area_type, levels = c("Urban", "Rural")),
+    severity = factor(severity, levels = c("Fatal", "Serious", "Slight"))
+  )
+
+print(paste("Рядків для аналізу:", nrow(df_q6)))
+```
+
+1. Перевірка та Дескриптивні статистики
+
+```{r}
+df_q6 %>%
+  group_by(area_type) %>%
+  summarise(
+    Кількість_ДТП = n(),
+    Середня_швидкість = mean(speed_limit, na.rm = TRUE),
+    Медіана_постраждалих = median(number_of_casualties, na.rm = TRUE),
+    Макс_швидкість = max(speed_limit, na.rm = TRUE)
+  ) %>%
+  kable(digits = 2, caption = "Таблиця 6.1: Статистичне порівняння Місто/Село")
+```
+
+2. Кореляційний аналіз
+
+```{r}
+cor_data <- df_q6 %>%
+  select(number_of_vehicles, number_of_casualties) %>%
+  cor(method = "spearman") %>%
+  as.data.frame() %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(-var1, names_to = "var2", values_to = "correlation")
+
+ggplot(cor_data, aes(x = var1, y = var2, fill = correlation)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(correlation, 2)), size = 5) +
+  scale_fill_gradient2(low = "#3498db", mid = "white", high = "#e74c3c",
+                       midpoint = 0, limits = c(-1, 1)) +
+  labs(title = "Матриця кореляцій (Spearman)",
+       x = "", y = "", fill = "Spearman r") +
+  theme_minimal()
+```
+
+3. Візуалізація
+6.1: Boxplot кількості постраждалих Показує викиди та середні значення постраждалих.
+
+```{r}
+ggplot(df_q6, aes(x = area_type, y = number_of_casualties, fill = area_type)) +
+  geom_boxplot(outlier.color = "red", alpha = 0.7) +
+  scale_fill_manual(values = c("Urban" = "#3498db", "Rural" = "#e67e22")) +
+  labs(title = "6.1: Кількість постраждалих на одну аварію",
+       x = "Тип місцевості", y = "Кількість постраждалих", fill = "Місцевість") +
+  theme_minimal()
+```
+
+6.2: Загальна кількість ДТП Порівняння інтенсивності аварійності.
+
+```{r}
+ggplot(df_q6, aes(x = area_type, fill = area_type)) +
+  geom_bar() +
+  geom_text(stat='count', aes(label=..count..), vjust=-0.5) +
+  scale_fill_manual(values = c("Urban" = "#3498db", "Rural" = "#e67e22")) +
+  labs(title = "6.2: Розподіл кількості ДТП",
+       x = "Тип місцевості", y = "Кількість ДТП") +
+  theme_minimal()
+```
+
+6.3: Обмеження швидкості (Dodge Bar) Порівняння конкретних лімітів швидкості в обох зонах.
+
+```{r}
+ggplot(df_q6, aes(x = as.factor(speed_limit), fill = area_type)) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = c("Urban" = "#2ecc71", "Rural" = "#9b59b6")) +
+  labs(title = "6.3: Кількість ДТП за обмеженням швидкості",
+       x = "Швидкість (mph)", y = "Кількість ДТП", fill = "Місцевість") +
+  theme_minimal()
+```
+
+6.4: Violin Plot обмеження швидкості Показує щільність розподілу швидкостей.
+
+```{r}
+ggplot(df_q6, aes(x = area_type, y = speed_limit, fill = area_type)) +
+  geom_violin(alpha = 0.6) +
+  scale_fill_brewer(palette = "Pastel1") +
+  labs(title = "6.4: Розподіл швидкісних режимів",
+       x = "Тип місцевості", y = "Швидкість (mph)") +
+  theme_minimal()
+```
+
+6.5: Тяжкість наслідків (Faceted Bar) Абсолютні цифри за кожною категорією тяжкості.
+
+```{r}
+ggplot(df_q6, aes(x = severity, fill = severity)) +
+  geom_bar() +
+  facet_wrap(~ area_type, scales = "free_y") +
+  scale_fill_brewer(palette = "Reds", direction = -1) +
+  labs(title = "6.5: Кількість аварій за тяжкістю (по зонах)",
+       x = "Тяжкість", y = "Кількість ДТП") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+df_q6 %>%
+  filter(!is.na(area_type), !is.na(severity)) %>%
+  count(area_type, severity) %>%
+  group_by(area_type) %>%
+  mutate(pct = n / sum(n) * 100) %>%
+  ggplot(aes(x = area_type, y = pct, fill = severity)) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("Fatal" = "#e74c3c", 
+                                "Serious" = "#e67e22", 
+                                "Slight" = "#f0b27a")) +
+  labs(title = "6.6: У сільській місцевості вища частка тяжких ДТП",
+       x = "Тип місцевості", 
+       y = "Частка (%)", 
+       fill = "Тяжкість") +
+  theme_minimal()
+```
+
+6.7 Логарифмічна шкала для швидкості
+
+```{r}
+ggplot(df_q6, aes(x = speed_limit, fill = area_type)) +
+  geom_histogram(bins = 15, position = "dodge", color = "white") +
+  scale_y_log10() + 
+  scale_fill_manual(values = c("Urban" = "#2ecc71", "Rural" = "#9b59b6")) +
+  labs(title = "6.7: Швидкісні ліміти (Log10 шкала)",
+       x = "Швидкість", y = "Кількість (Log10)", fill = "Місцевість") +
+  theme_minimal()
+```
+
