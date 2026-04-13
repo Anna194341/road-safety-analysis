@@ -12,7 +12,6 @@ library(ggridges)
 library(knitr)   
 library(GGally)  
 
-# Завантаження даних
 data_path <- "../../data/processed/collisions_2024_cleaned.csv"
 df <- read_csv(data_path)
 ```
@@ -134,4 +133,26 @@ ggplot(df, aes(x = hour, fill = severity)) +
        subtitle = "Логарифмування дозволяє краще бачити категорії Fatal та Serious",
        x = "Година", y = "Кількість (log10)") +
   theme_light()
+```
+
+5. Додаткова валідація: Скоригований показник тяжкості
+
+```{r}
+df %>%
+  group_by(hour) %>%
+  summarise(
+    # Використовуємо ймовірнісну змінну
+    mean_adjusted_serious = mean(collision_adjusted_severity_serious, na.rm = TRUE),
+    # Тепер рахуємо частку на основі твоїх нових назв категорій
+    actual_serious_ratio = mean(severity %in% c("Fatal", "Serious"), na.rm = TRUE)
+  ) %>%
+  ggplot(aes(x = hour)) +
+  geom_line(aes(y = mean_adjusted_serious, color = "Скоригована ймовірність (Adjusted)"), size = 1.2) +
+  geom_line(aes(y = actual_serious_ratio, color = "Зафіксовано поліцією (Police)"), linetype = "dashed", size = 1) +
+  scale_color_manual(values = c("Скоригована ймовірність (Adjusted)" = "#E74C3C", 
+                                "Зафіксовано поліцією (Police)" = "#2C3E50")) +
+  labs(title = "Графік 1.6: Валідація тяжкості наслідків",
+       subtitle = "Порівняння суб'єктивної оцінки поліції та статистичної корекції",
+       x = "Година доби", y = "Показник (0 до 1)", color = "Метод оцінки") +
+  theme_minimal()
 ```
