@@ -165,3 +165,14 @@ ggplot(df_q6, aes(x = speed_limit, fill = area_type)) +
   theme_minimal()
 ```
 
+```{r}
+ggplot(df_q6, aes(x = collision_adjusted_severity_serious, fill = area_type)) +
+  geom_density(alpha = 0.5) + # Напівпрозорість для накладання
+  scale_fill_manual(values = c("Urban" = "#3498db", "Rural" = "#e67e22")) +
+  labs(title = "6.8: Порівняння профілів ризику (Місто vs Село)",
+       subtitle = "Розподіл ймовірності серйозних наслідків",
+       x = "Ймовірність Serious Injury (від 0 до 1)",
+       y = "Щільність (Density)",
+       fill = "Місцевість") +
+  theme_minimal()
+```
