@@ -1,0 +1,87 @@
+---
+title: "ЛР №1 — Питання 8"
+author: "Масленнікова Яна"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(scales)
+library(knitr)
+
+data_path <- "../../data/processed/collisions_2024_cleaned.csv"
+df_raw <- read_csv(data_path)
+```
+
+1. ПІДГОТОВКА ДАНИХ
+
+```{r}
+df_q3 <- df_raw %>%
+  mutate(
+    day_of_week = factor(day_of_week, levels = c("Monday", "Tuesday", "Wednesday", 
+                                                 "Thursday", "Friday", "Saturday", "Sunday")),
+    severity = factor(collision_severity, levels = c("Slight", "Serious", "Fatal"))
+  ) %>%
+  filter(!is.na(day_of_week))
+```
+
+2. ВІЗУАЛІЗАЦІЯ ТА АНАЛІЗ
+
+2.1 Загальна кількість ДТП за днями
+
+```{r}
+ggplot(df_q3, aes(x = day_of_week, fill = day_of_week)) +
+  geom_bar(show.legend = FALSE) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(title = "3.1: Загальна кількість ДТП за днями тижня",
+       x = "День тижня", y = "Кількість випадків") +
+  theme_minimal()
+```
+
+2.2 Частка тяжких наслідків
+
+```{r}
+df_q3 %>%
+  count(day_of_week, severity) %>%
+  group_by(day_of_week) %>%
+  mutate(pct = n / sum(n)) %>%
+  ggplot(aes(x = day_of_week, y = pct, fill = severity)) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("Slight" = "#AED6F1", "Serious" = "#E67E22", "Fatal" = "#C0392B")) +
+  labs(title = "3.2: Структура тяжкості ДТП за днями",
+       subtitle = "Частка Fatal та Serious аварій зростає у вихідні",
+       x = "День тижня", y = "Частка (%)", fill = "Тяжкість") +
+  theme_minimal()
+```
+
+2.3 Середня кількість постраждалих
+
+```{r}
+df_q3 %>%
+  group_by(day_of_week) %>%
+  summarise(avg_casualties = mean(number_of_casualties, na.rm = TRUE)) %>%
+  ggplot(aes(x = day_of_week, y = avg_casualties, group = 1)) +
+  geom_line(color = "red", size = 1) +
+  geom_point(size = 3) +
+  labs(title = "3.3: Середня кількість постраждалих в одному ДТП",
+       x = "День тижня", y = "Середнє число осіб") +
+  theme_minimal()
+```
+
+3. ПІДСУМКИ
+
+```{r}
+summary_table <- df_q3 %>%
+  group_by(day_of_week) %>%
+  summarise(
+    Total_Accidents = n(),
+    Fatal_Count = sum(severity == "Fatal"),
+    Fatal_Rate_Percent = (Fatal_Count / Total_Accidents) * 100,
+    Avg_Casualties = mean(number_of_casualties)
+  )
+
+kable(summary_table, digits = 2, caption = "Зведена статистика небезпеки за днями")
+```
+
