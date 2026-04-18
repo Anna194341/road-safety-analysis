@@ -1,0 +1,150 @@
+---
+title: "Лабораторна робота №1 — Питання 5"
+author: "Катерина"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(dplyr)
+library(readr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(ggridges)
+```
+
+## 1. Підготовка даних
+
+```{r data_prep}
+df <- read_csv("data/processed/collisions_2024_cleaned.csv", na = c("", "NA", "NA"))
+
+df <- df %>%
+  mutate(
+    collision_severity = factor(collision_severity, levels = c("Slight", "Serious", "Fatal")),
+    speed_limit = factor(speed_limit, levels = sort(as.numeric(unique(speed_limit)))),
+    
+    junction_clean = case_when(
+      str_detect(tolower(junction_detail), "roundabout") ~ "Круговий рух",
+      str_detect(tolower(junction_detail), "t or staggered") ~ "Т-подібне перехрестя",
+      TRUE ~ NA_character_
+    )
+  )
+
+vars_of_interest <- c(
+  "speed_limit", "collision_adjusted_severity_serious", 
+  "collision_severity", "junction_detail", 
+  "collision_adjusted_severity_slight", "junction_clean"
+)
+
+df_selected <- df %>% select(any_of(vars_of_interest))
+
+report_missing <- function(data, vars, title) {
+  missing_detailed <- data %>%
+    select(all_of(vars)) %>%
+    summarise(across(everything(), ~ sum(is.na(.)))) %>%
+    pivot_longer(cols = everything(), names_to = "Змінна", values_to = "Пропущених_значень") %>%
+    mutate(Відсоток = round((Пропущених_значень / nrow(data)) * 100, 3))
+  
+  cat(paste0("\n--- ", title, " ---\n"))
+  print(missing_detailed)
+}
+
+custom_theme <- function(...) {
+  theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5, color = "gray40", face = "italic"),
+      strip.background = element_rect(fill = "#E0E0E0", color = NA),
+      strip.text = element_text(face = "bold", size = 12),
+      ...
+    )
+}
+```
+
+## 2. Аналіз пропущених значень
+
+```{r missing_values}
+vars_to_check_q5 <- c("junction_detail", "collision_severity", "speed_limit", "collision_adjusted_severity_serious", "collision_adjusted_severity_slight")
+report_missing(df, vars_to_check_q5, "Звіт про пропущені значення (Дослідницьке питання №5)")
+
+df_q5 <- df_selected %>% filter(!is.na(junction_clean))
+```
+
+## 5.1: Абсолютна кількість ДТП за типом перехрестя
+
+```{r plot_5_1}
+plot_5_1 <- df_q5 %>% count(junction_clean) %>% mutate(pct = n / sum(n) * 100)
+
+ggplot(plot_5_1, aes(x = junction_clean, y = n, fill = junction_clean)) +
+  geom_col(width = 0.5, alpha = 0.9) +
+  geom_text(aes(label = n), vjust = -0.5, size = 6, fontface = "bold") +
+  scale_fill_manual(values = c("Круговий рух" = "#4DB6AC", "Т-подібне перехрестя" = "#FF8A65")) +
+  scale_y_continuous(trans = "log10", breaks = c(100, 1000, 5000, 10000, 30000), expand = expansion(mult = c(0, 0.2))) +
+  labs(title = "Кількість ДТП за типом перехрестя", x = "Тип перехрестя", y = "Абсолютна кількість ДТП (Log10)") +
+  custom_theme(panel.grid.major.x = element_blank(), legend.position = "none", axis.text.x = element_text(face = "bold", size = 13))
+```
+
+## 5.2: Розподіл за тяжкістю наслідків
+
+```{r plot_5_2}
+plot_5_2 <- df_q5 %>% count(junction_clean, collision_severity) %>% group_by(junction_clean) %>% mutate(pct = n / sum(n) * 100) %>% ungroup()
+
+ggplot(plot_5_2, aes(x = junction_clean, y = pct, fill = collision_severity)) +
+  geom_col(position = "stack", width = 0.6, alpha = 0.9) +
+  geom_text(aes(label = sprintf("%.1f%%", pct)), position = position_stack(vjust = 0.5), size = 5, fontface = "bold") +
+  scale_fill_manual(values = c("Slight"="#8ECAE6", "Serious"="#FB8500", "Fatal"="#D62828"), name = "Тяжкість ДТП") +
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  labs(title = "Розподіл тяжкості ДТП", x = "Тип перехрестя", y = "Частка") +
+  custom_theme(panel.grid.major.x = element_blank(), legend.position = "bottom", axis.text.x = element_text(face = "bold", size = 12))
+```
+
+## 5.3: Ймовірність серйозного ДТП
+
+```{r plot_5_3}
+plot_5_3 <- df_q5 %>% filter(!is.na(collision_adjusted_severity_serious))
+
+ggplot(plot_5_3, aes(x = junction_clean, y = collision_adjusted_severity_serious, fill = junction_clean)) +
+  geom_boxplot(alpha = 0.8, outlier.color = "#D32F2F", outlier.alpha = 0.3, outlier.size = 1.5) +
+  scale_fill_manual(values = c("Круговий рух" = "#118AB2", "Т-подібне перехрестя" = "#FFD166")) +
+  labs(title = "Ймовірність серйозних травм", x = "Тип перехрестя", y = "Ймовірність серйозного ДТП") +
+  custom_theme(panel.grid.major.x = element_blank(), legend.position = "none", axis.text.x = element_text(face = "bold", size = 13))
+```
+
+## 5.4: Динаміка ймовірностей залежно від швидкості
+
+```{r plot_5_4, fig.width=9}
+plot_5_4 <- df_q5 %>%
+  filter(!is.na(speed_limit) & !is.na(collision_adjusted_severity_slight) & !is.na(collision_adjusted_severity_serious) & !is.na(collision_severity)) %>%
+  group_by(junction_clean, speed_limit) %>%
+  summarise(
+    Mean_Slight = mean(collision_adjusted_severity_slight, na.rm = TRUE),
+    Mean_Serious = mean(collision_adjusted_severity_serious, na.rm = TRUE),
+    Mean_Fatal = mean(collision_severity == "Fatal", na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  pivot_longer(cols = starts_with("Mean_"), names_to = "severity_type", names_prefix = "Mean_", values_to = "mean_probability") %>%
+  mutate(severity_type = factor(severity_type, levels = c("Slight", "Serious", "Fatal")))
+
+ggplot(plot_5_4, aes(x = as.numeric(as.character(speed_limit)), y = mean_probability, color = severity_type)) +
+  geom_line(linewidth = 1.5) + geom_point(size = 3) +
+  facet_wrap(~ junction_clean) +
+  scale_color_manual(values = c("Slight"="#8ECAE6", "Serious"="#FB8500", "Fatal"="#D62828"), name = "Тип наслідків") +
+  scale_x_continuous(breaks = seq(20, 70, by = 10)) +
+  labs(title = "Ймовірність наслідків залежно від швидкості", x = "Обмеження швидкості", y = "Ймовірність") +
+  custom_theme(panel.grid.minor = element_blank(), legend.position = "bottom")
+```
+
+## 5.5: Розподіл швидкостей за типами перехресть
+
+```{r plot_5_5}
+plot_5_5 <- df_q5 %>% filter(!is.na(speed_limit))
+
+ggplot(plot_5_5, aes(x = as.numeric(as.character(speed_limit)), y = junction_clean, fill = junction_clean)) +
+  geom_density_ridges(alpha = 0.8, color = "white", scale = 1.2, bandwidth = 3) +
+  scale_fill_manual(values = c("Круговий рух" = "#F48FB1", "Т-подібне перехрестя" = "#AED581")) +
+  scale_x_continuous(breaks = seq(20, 70, by = 10)) +
+  labs(title = "Щільність швидкісних лімітів", x = "Обмеження швидкості", y = NULL) +
+  custom_theme(panel.grid.major.x = element_line(color = "gray80", linetype = "dashed"), panel.grid.minor = element_blank(), panel.grid.major.y = element_blank(), axis.text.y = element_text(face = "bold", size = 13, vjust = 0), legend.position = "none")
+```
