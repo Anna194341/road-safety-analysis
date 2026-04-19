@@ -1,0 +1,203 @@
+---
+title: "Лабораторна робота №1 — Питання 9 (Просторовий аналіз ДТП)"
+author: "Анна Сак"
+output: html_document
+---
+
+## Мета роботи
+
+Дослідити просторовий розподіл дорожньо-транспортних пригод (ДТП), визначити зони найбільшої концентрації, проаналізувати розподіл тяжких ДТП та просторові відмінності між urban- і rural-зонами.
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(scales)
+library(maps)
+library(ggrepel)
+
+data_path <- "../../data/processed/collisions_2024_cleaned.csv"
+df <- read_csv(data_path)
+
+theme_set(theme_minimal(base_size = 12))
+
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+```
+
+```{r}
+df_map <- df %>%
+  filter(!is.na(longitude), !is.na(latitude)) %>%
+  mutate(
+    severe_cat = collision_severity %in% c("Fatal", "fatal", "Serious", "serious")
+  )
+```
+
+# Графік 0. Просторовий розподіл ДТП з урахуванням карти та міст
+
+```{r}
+cities <- tibble(
+  city = c("London", "Birmingham", "Manchester", "Leeds", "Glasgow", "Liverpool", "Bristol"),
+  lon = c(-0.1, -1.89, -2.24, -1.55, -4.25, -2.98, -2.59),
+  lat = c(51.5, 52.48, 53.48, 53.80, 55.86, 53.41, 51.45)
+)
+
+bins_main <- 70
+
+g0 <- ggplot() +
+  annotation_borders("world", regions = "UK", fill = "grey95", color = "black", linewidth = 0.4) +
+  stat_bin_2d(
+    data = df_map,
+    aes(x = longitude, y = latitude),
+    bins = bins_main,
+    alpha = 0.75
+  ) +
+  geom_point(data = cities, aes(x = lon, y = lat), size = 1.8) +
+  geom_text_repel(
+    data = cities,
+    aes(x = lon, y = lat, label = city),
+    size = 3,
+    fontface = "bold"
+  ) +
+  coord_fixed(xlim = c(-8, 2.5), ylim = c(50, 61)) +
+  scale_fill_viridis_c(trans = "log", name = "Кількість ДТП") +
+  labs(
+    title = "Найбільша кількість ДТП припадає на великі міста \nВеликобританії",
+    x = "Довгота",
+    y = "Широта"
+  )
+
+g0
+```
+
+# Графік 1. Кількість ДТП у просторі
+
+```{r}
+g1 <- ggplot(df_map, aes(x = longitude, y = latitude)) +
+  stat_bin_2d(bins = bins_main) +
+  coord_fixed() +
+  scale_fill_viridis_c(trans = "log", name = "Кількість ДТП") +
+  labs(
+    title = "ДТП розподілені нерівномірно по території країни",
+    x = "Довгота",
+    y = "Широта"
+  )
+
+g1
+```
+
+# Графік 2. Кількість тяжких ДТП у просторі
+
+```{r}
+df_severe <- df_map %>%
+  filter(severe_cat)
+
+g2 <- ggplot(df_severe, aes(x = longitude, y = latitude)) +
+  stat_bin_2d(bins = bins_main) +
+  coord_fixed() +
+  scale_fill_viridis_c(trans = "log", name = "Кількість тяжких ДТП") +
+  labs(
+    title = "Розподіл тяжких ДТП схожий на розподіл \nзагальної кількості ДТП",
+    x = "Довгота",
+    y = "Широта"
+  )
+
+g2
+```
+
+# Графік 3. Просторовий розподіл відхилення тяжких ДТП від середнього
+
+```{r}
+bins_grid <- 70
+
+lon_breaks <- seq(min(df_map$longitude, na.rm = TRUE),
+                  max(df_map$longitude, na.rm = TRUE),
+                  length.out = bins_grid + 1)
+
+lat_breaks <- seq(min(df_map$latitude, na.rm = TRUE),
+                  max(df_map$latitude, na.rm = TRUE),
+                  length.out = bins_grid + 1)
+
+df_grid <- df_map %>%
+  mutate(
+    lon_id = cut(longitude, breaks = lon_breaks, labels = FALSE, include.lowest = TRUE),
+    lat_id = cut(latitude, breaks = lat_breaks, labels = FALSE, include.lowest = TRUE)
+  ) %>%
+  filter(!is.na(lon_id), !is.na(lat_id)) %>%
+  group_by(lon_id, lat_id) %>%
+  summarise(
+    n = n(),
+    s = sum(severe_cat, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+p0 <- sum(df_grid$s) / sum(df_grid$n)
+
+df_grid <- df_grid %>%
+  mutate(
+    x = (lon_breaks[lon_id] + lon_breaks[lon_id + 1]) / 2,
+    y = (lat_breaks[lat_id] + lat_breaks[lat_id + 1]) / 2,
+    p = s / n,
+    z = (p - p0) / sqrt(p0 * (1 - p0) / n)
+  )
+
+z_lim <- quantile(abs(df_grid$z), 0.99, na.rm = TRUE)
+tile_w <- diff(lon_breaks)[1]
+tile_h <- diff(lat_breaks)[1]
+
+g3 <- ggplot(df_grid, aes(x = x, y = y, fill = z)) +
+  geom_tile(width = tile_w, height = tile_h) +
+  coord_fixed() +
+  scale_fill_viridis_c(
+    option = "viridis",
+    limits = c(-z_lim, z_lim),
+    oob = squish,
+    name = "Z-score"
+  ) +
+  labs(
+    title = "Частка тяжких ДТП відрізняється між регіонами",
+    x = "Довгота",
+    y = "Широта"
+  )
+
+g3
+```
+
+# Графік 4. Просторова щільність ДТП в urban та rural зонах
+
+```{r}
+df_ur <- df_map %>%
+  filter(urban_or_rural_area %in% c("Urban", "urban", "Rural", "rural")) %>%
+  mutate(
+    urban_or_rural_area = case_when(
+      urban_or_rural_area %in% c("Urban", "urban") ~ "Urban",
+      urban_or_rural_area %in% c("Rural", "rural") ~ "Rural",
+      TRUE ~ NA_character_
+    )
+  )
+
+g4 <- ggplot(df_ur, aes(x = longitude, y = latitude)) +
+  stat_density_2d_filled(contour_var = "ndensity") +
+  coord_fixed() +
+  facet_wrap(~urban_or_rural_area, ncol = 2) +
+  labs(
+    title = "Просторовий розподіл ДТП відрізняється між містами та \nсільською місцевістю",
+    x = "Довгота",
+    y = "Широта",
+    fill = "Щільність"
+  )
+
+g4
+```
+
+```{r}
+plot_dir <- "../../plots/eda/q9"
+ggsave(file.path(plot_dir, "accidents_map_with_cities.png"), g0, width = 10, height = 7, dpi = 300)
+
+ggsave(file.path(plot_dir, "spatial_distribution_all_accidents.png"), g1, width = 10, height = 7, dpi = 300)
+
+ggsave(file.path(plot_dir, "spatial_distribution_severe_accidents.png"), g2, width = 10, height = 7, dpi = 300)
+
+ggsave(file.path(plot_dir, "severe_accidents_zscore_map.png"), g3, width = 10, height = 7, dpi = 300)
+
+ggsave(file.path(plot_dir, "urban_vs_rural_density.png"), g4, width = 11, height = 7, dpi = 300)
+```
