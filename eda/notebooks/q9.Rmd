@@ -119,39 +119,31 @@ lat_breaks <- seq(min(df_map$latitude, na.rm = TRUE),
 
 df_grid <- df_map %>%
   mutate(
-    lon_id = cut(longitude, breaks = lon_breaks, labels = FALSE, include.lowest = TRUE),
-    lat_id = cut(latitude, breaks = lat_breaks, labels = FALSE, include.lowest = TRUE)
+    lon_id = cut(longitude, lon_breaks, labels = FALSE, include.lowest = TRUE),
+    lat_id = cut(latitude, lat_breaks, labels = FALSE, include.lowest = TRUE)
   ) %>%
   filter(!is.na(lon_id), !is.na(lat_id)) %>%
   group_by(lon_id, lat_id) %>%
   summarise(
-    n = n(),
-    s = sum(severe_cat, na.rm = TRUE),
+    n = n(),  # ← додали
+    p = mean(severe_cat, na.rm = TRUE),
     .groups = "drop"
-  )
-
-p0 <- sum(df_grid$s) / sum(df_grid$n)
-
-df_grid <- df_grid %>%
+  ) %>%
+  filter(n >= 10) %>%   # ← додали
   mutate(
     x = (lon_breaks[lon_id] + lon_breaks[lon_id + 1]) / 2,
-    y = (lat_breaks[lat_id] + lat_breaks[lat_id + 1]) / 2,
-    p = s / n,
-    z = (p - p0) / sqrt(p0 * (1 - p0) / n)
+    y = (lat_breaks[lat_id] + lat_breaks[lat_id + 1]) / 2
   )
 
-z_lim <- quantile(abs(df_grid$z), 0.99, na.rm = TRUE)
-tile_w <- diff(lon_breaks)[1]
-tile_h <- diff(lat_breaks)[1]
-
-g3 <- ggplot(df_grid, aes(x = x, y = y, fill = z)) +
-  geom_tile(width = tile_w, height = tile_h) +
+g3 <- ggplot(df_grid, aes(x = x, y = y, fill = p)) +
+  geom_tile(
+    width = diff(lon_breaks)[1],
+    height = diff(lat_breaks)[1]
+  ) +
   coord_fixed() +
   scale_fill_viridis_c(
-    option = "viridis",
-    limits = c(-z_lim, z_lim),
-    oob = squish,
-    name = "Z-score"
+    labels = scales::percent_format(accuracy = 1),
+    name = "Частка тяжких ДТП"
   ) +
   labs(
     title = "Частка тяжких ДТП відрізняється між регіонами",
@@ -197,7 +189,7 @@ ggsave(file.path(plot_dir, "spatial_distribution_all_accidents.png"), g1, width 
 
 ggsave(file.path(plot_dir, "spatial_distribution_severe_accidents.png"), g2, width = 10, height = 7, dpi = 300)
 
-ggsave(file.path(plot_dir, "severe_accidents_zscore_map.png"), g3, width = 10, height = 7, dpi = 300)
+ggsave(file.path(plot_dir, "severe_accidents_share_map.png"), g3, width = 10, height = 7, dpi = 300)
 
 ggsave(file.path(plot_dir, "urban_vs_rural_density.png"), g4, width = 11, height = 7, dpi = 300)
 ```
