@@ -134,7 +134,26 @@ ggplot(df, aes(x = hour, fill = severity)) +
        x = "Година", y = "Кількість (log10)") +
   theme_light()
 ```
+Графік 1.6: Нормований аналіз тяжкості ДТП
 
+```{r}
+
+ggplot(df, aes(x = factor(hour), fill = severity)) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c("Fatal" = "#E41A1C", 
+                               "Serious" = "#4DAF4A", 
+                               "Slight" = "#377EB8")) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    title = "Відносна тяжкість ДТП за годинами доби",
+    subtitle = "Нічні години демонструють значно вищу частку тяжких наслідків",
+    x = "Година доби",
+    y = "Частка від загальної кількості ДТП (%)",
+    fill = "Тяжкість"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
 5. Додаткова валідація: Скоригований показник тяжкості
 
 ```{r}
