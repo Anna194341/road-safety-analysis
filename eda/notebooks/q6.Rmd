@@ -17,42 +17,84 @@ df_raw <- read_csv(data_path)
 
 1. ПІДГОТОВКА ДАНИХ
 
+
+```{r}
+df_raw %>% 
+  select(urban_or_rural_area, speed_limit, number_of_vehicles, number_of_casualties, collision_severity) %>% 
+  summarise(across(everything(), ~sum(is.na(.)))) %>% 
+  kable(caption = "Таблиця 6.1: Кількість пропущених значень для Питання 6")
+```
+
 ```{r}
 df_q6 <- df_raw %>%
   mutate(
     area_type = case_when(
       urban_or_rural_area %in% c(1, "1", "Urban") ~ "Urban",
       urban_or_rural_area %in% c(2, "2", "Rural") ~ "Rural",
-      TRUE ~ "Unknown"
+      TRUE ~ NA_character_
     ),
     severity = case_when(
-      collision_severity %in% c(1, "1", "Fatal") ~ "Fatal",
+      collision_severity %in% c(1, "1", "Fatal")   ~ "Fatal",
       collision_severity %in% c(2, "2", "Serious") ~ "Serious",
-      collision_severity %in% c(3, "3", "Slight") ~ "Slight",
-      TRUE ~ "Unknown"
+      collision_severity %in% c(3, "3", "Slight")  ~ "Slight",
+      TRUE ~ NA_character_
     )
   ) %>%
-  filter(area_type != "Unknown") %>%
+  filter(!is.na(area_type)) %>%
   mutate(
     area_type = factor(area_type, levels = c("Urban", "Rural")),
-    severity = factor(severity, levels = c("Fatal", "Serious", "Slight"))
+    severity = factor(severity, levels = c("Fatal", "Serious", "Slight")),
+    speed_limit = as.numeric(speed_limit),
+    number_of_casualties = as.numeric(number_of_casualties)
   )
-
-print(paste("Рядків для аналізу:", nrow(df_q6)))
 ```
 
-1. Перевірка та Дескриптивні статистики
+```{r}
+df_q6 %>% 
+  group_by(area_type) %>%
+  summarise(across(c(speed_limit, number_of_casualties), 
+                   list(mean = ~mean(., na.rm = TRUE), 
+                        median = ~median(., na.rm = TRUE), 
+                        sd = ~sd(., na.rm = TRUE), 
+                        min = ~min(., na.rm = TRUE), 
+                        max = ~max(., na.rm = TRUE)))) %>% 
+  pivot_longer(-area_type, names_to = "Показник", values_to = "Значення") %>%
+  kable(digits = 2, caption = "Таблиця 6.2: Дескриптивні статистики (Порівняння Місто/Село)")
+```
 
 ```{r}
-df_q6 %>%
+df_q6 <- df_raw %>%
+  mutate(
+    area_type = case_when(
+      urban_or_rural_area %in% c(1, "1", "Urban") ~ "Urban",
+      urban_or_rural_area %in% c(2, "2", "Rural") ~ "Rural",
+      TRUE ~ NA_character_
+    ),
+    severity = case_when(
+      collision_severity %in% c(1, "1", "Fatal")   ~ "Fatal",
+      collision_severity %in% c(2, "2", "Serious") ~ "Serious",
+      collision_severity %in% c(3, "3", "Slight")  ~ "Slight",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(area_type)) %>%
+  mutate(
+    area_type = factor(area_type, levels = c("Urban", "Rural")),
+    severity = factor(severity, levels = c("Fatal", "Serious", "Slight")),
+    
+    speed_limit = as.numeric(speed_limit),
+    number_of_casualties = as.numeric(number_of_casualties),
+    number_of_vehicles = as.numeric(number_of_vehicles)
+  )
+
+df_q6 %>% 
   group_by(area_type) %>%
   summarise(
     Кількість_ДТП = n(),
     Середня_швидкість = mean(speed_limit, na.rm = TRUE),
-    Медіана_постраждалих = median(number_of_casualties, na.rm = TRUE),
-    Макс_швидкість = max(speed_limit, na.rm = TRUE)
-  ) %>%
-  kable(digits = 2, caption = "Таблиця 6.1: Статистичне порівняння Місто/Село")
+    Медіана_постраждалих = median(number_of_casualties, na.rm = TRUE)
+  ) %>% 
+  kable(digits = 2, caption = "Таблиця 6.2: Статистичне порівняння Urban / Rural")
 ```
 
 2. Кореляційний аналіз
@@ -167,7 +209,7 @@ ggplot(df_q6, aes(x = speed_limit, fill = area_type)) +
 
 ```{r}
 ggplot(df_q6, aes(x = collision_adjusted_severity_serious, fill = area_type)) +
-  geom_density(alpha = 0.5) + # Напівпрозорість для накладання
+  geom_density(alpha = 0.5) + 
   scale_fill_manual(values = c("Urban" = "#3498db", "Rural" = "#e67e22")) +
   labs(title = "6.8: Порівняння профілів ризику (Місто vs Село)",
        subtitle = "Розподіл ймовірності серйозних наслідків",
