@@ -1,18 +1,69 @@
 ---
-title: "R Notebook"
-output: html_notebook
+title: "ЛР №1 — Питання 8"
+author: "Масленнікова Яна"
+output: html_document
 ---
 
-This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(scales)
+library(knitr)
 
-Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
-
-```{r}
-plot(cars)
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+1. ПІДГОТОВКА ДАНИХ
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+```{r}
+df_q8 <- df_raw %>%
+  mutate(
+    condition_type = case_when(
+      road_surface_conditions %in% c("Wet or damp", "Flood over 3cm. deep", "Frost or ice", "Snow") ~ "Slippery Road",
+      road_surface_conditions == "Dry" ~ "Dry Road",
+      TRUE ~ "Unknown"
+    ),
+    severity = factor(collision_severity, levels = c("Slight", "Serious", "Fatal"))
+  ) %>%
+  filter(condition_type != "Unknown", !is.na(severity)) %>%
+  mutate(
+    is_pure_human_factor = if_else(condition_type == "Dry Road" & 
+                                     (is.na(special_conditions_at_site) | special_conditions_at_site == "None"), 
+                                   "Human Error", "Environmental/Other")
+  )
+```
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+2. АНАЛІЗ ЧАСТОТИ ТА ТЯЖКОСТІ
+
+2.1 Розподіл кількості ДТП за умовами
+
+```{r}
+df_q8 %>%
+  count(condition_type) %>%
+  mutate(percent = n / sum(n) * 100) %>%
+  ggplot(aes(x = reorder(condition_type, -n), y = n, fill = condition_type)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = sprintf("%.1f%%", percent)), vjust = -0.5) +
+  scale_fill_manual(values = c("Slippery Road" = "#3498db", "Dry Road" = "#95a5a6")) +
+  labs(title = "Кількість ДТП на слизькій та сухій дорозі",
+       x = "Умови дороги", y = "Кількість випадків") +
+  theme_minimal() +
+  guides(fill = "none")
+```
+
+2.2 Вплив умов на тяжкість наслідків
+
+```{r}
+df_q8 %>%
+  group_by(condition_type, severity) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(condition_type) %>%
+  mutate(pct = count / sum(count)) %>%
+  ggplot(aes(x = condition_type, y = pct, fill = severity)) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("Slight" = "#f9e79f", "Serious" = "#e67e22", "Fatal" = "#c0392b")) +
+  labs(title = "Порівняння тяжкості ДТП",
+       subtitle = "Частка фатальних та тяжких випадків залежно від стану дороги",
+       x = "Стан дороги", y = "Частка (%)", fill = "Тяжкість") +
+  theme_minimal()
+```
