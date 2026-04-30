@@ -19,6 +19,9 @@ The cleaned dataset is intended to be reused across all future analysis stages, 
 
 ## Dataset
 
+The dataset used in this project is publicly available here:  
+[UK Department for Transport — Road Safety Open Data](https://www.gov.uk/government/statistical-data-sets/road-safety-open-data)
+
 | Characteristic | Value |
 |---|---:|
 | Source | UK Department for Transport, STATS19 system |
