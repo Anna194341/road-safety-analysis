@@ -1,0 +1,93 @@
+---
+title: "ЛР №2 — Питання 5"
+author: "Масленнікова Яна"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(DescTools)
+```
+
+Завантаження даних
+
+```{r}
+file_path <- "../../data/processed/collisions_2024_cleaned.csv"
+data <- read_csv(file_path)
+```
+
+1. ПІДГОТОВКА ДАНИХ
+
+```{r}
+data_block5 <- data %>%
+  
+  filter(!is.na(road_surface_conditions), !is.na(collision_severity)) %>%
+
+    mutate(surface_context = case_when(
+    road_surface_conditions == "Dry" ~ "Dry",
+    road_surface_conditions %in% c("Wet or damp", "Flood over 3cm. deep") ~ "Wet",
+    road_surface_conditions %in% c("Frost or ice", "Snow") ~ "Snow-Ice"
+  )) %>%
+
+    mutate(severe = ifelse(collision_severity %in% c("Fatal", "Serious"), TRUE, FALSE))
+
+table(data_block5$surface_context, data_block5$severe)
+```
+
+2. X^2-тест
+
+```{r}
+contingency_table <- table(data_block5$surface_context, data_block5$severe)
+
+chi_test <- chisq.test(contingency_table)
+cv_effect <- CramerV(contingency_table)
+
+print(chi_test)
+cat("Cramer's V:", cv_effect)
+```
+
+3. РОЗРАХУНОК ЧАСТОК ТА ДОВІРЧИХ ІНТЕРВАЛІВ (СІ)
+
+```{r}
+stats_table <- data_block5 %>%
+  group_by(surface_context) %>%
+  summarise(
+    n = n(),
+    n_severe = sum(severe),
+    p_hat = n_severe / n,
+    se = sqrt(p_hat * (1 - p_hat) / n),
+    lower_ci = p_hat - 1.96 * se,
+    upper_ci = p_hat + 1.96 * se
+  )
+
+print(stats_table)
+
+ggplot(stats_table, aes(x = surface_context, y = p_hat, fill = surface_context)) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), width = 0.2) +
+  labs(title = "Частка тяжких ДТП за типом покриття",
+       y = "Частка (p)", x = "Тип дороги") +
+  theme_minimal()
+```
+
+4. КОНТРАСТ Snow/Ice vs Dry ТА Risk Ratio
+
+```{r}
+snow_data <- stats_table %>% filter(surface_context == "Snow-Ice")
+dry_data <- stats_table %>% filter(surface_context == "Dry")
+
+diff_p <- snow_data$p_hat - dry_data$p_hat
+se_diff <- sqrt(snow_data$p_hat*(1-snow_data$p_hat)/snow_data$n + 
+                dry_data$p_hat*(1-dry_data$p_hat)/dry_data$n)
+
+z_stat <- diff_p / se_diff
+p_val_wald <- 1 - pnorm(z_stat) 
+
+risk_ratio <- snow_data$p_hat / dry_data$p_hat
+
+cat("Різниця часток:", diff_p, 
+    "\n95% CI для різниці: [", diff_p - 1.96*se_diff, ",", diff_p + 1.96*se_diff, "]",
+    "\np-value (Wald):", p_val_wald,
+    "\nRisk Ratio:", risk_ratio)
+```
+
