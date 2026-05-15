@@ -1,0 +1,333 @@
+---
+title: "lab2_q3"
+author: "Katerina"
+date: "2026-05-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(gridExtra)
+library(grid)
+
+
+df <- read_csv("data/processed/collisions_2024_cleaned.csv")
+
+df <- df %>%
+  mutate(severe = collision_severity %in% c("Fatal", "Serious"))
+
+df_speed <- df %>%
+  filter(!is.na(speed_limit))
+```
+# ЧАСТИНА A: Wald test для різниці часток
+
+# 1. Створення груп
+```{r}
+low  <- df_speed %>% filter(speed_limit <= 30)
+high <- df_speed %>% filter(speed_limit >= 60)
+```
+# 2. Точкові оцінки та 95% CI
+```{r}
+wald_ci_prop <- function(x, alpha = 0.05) {
+  n      <- length(x)
+  p_hat  <- mean(x)
+  se_hat <- sqrt(p_hat * (1 - p_hat) / n)
+  z      <- qnorm(1 - alpha / 2)
+  tibble(
+    n        = n,
+    n_severe = sum(x),
+    p_hat    = p_hat,
+    se_hat   = se_hat,
+    ci_l     = p_hat - z * se_hat,
+    ci_u     = p_hat + z * se_hat
+  )
+}
+
+stats_low  <- wald_ci_prop(low$severe)  %>% mutate(group = "Low (≤30 км/год)")
+stats_high <- wald_ci_prop(high$severe) %>% mutate(group = "High (≥60 км/год)")
+```
+# 3. Wald test
+# H0: p_high <= p_low
+# H1: p_high > p_low (одностороння)
+# Вибірки незалежні — одне ДТП не може мати
+# одночасно speed_limit <= 30 і >= 60
+
+```{r}
+p_low  <- stats_low$p_hat
+p_high <- stats_high$p_hat
+n_low  <- stats_low$n
+n_high <- stats_high$n
+
+se_diff   <- sqrt(p_low  * (1 - p_low)  / n_low +
+                    p_high * (1 - p_high) / n_high)
+diff_hat  <- p_high - p_low
+T_stat    <- diff_hat / se_diff
+p_value_A <- pnorm(T_stat, lower.tail = FALSE)
+
+z975      <- qnorm(0.975)
+ci_diff_l <- diff_hat - z975 * se_diff
+ci_diff_u <- diff_hat + z975 * se_diff
+
+result_table <- tibble(
+  Статистика      = c("p_low  (≤30 км/год)",
+                      "p_high (≥60 км/год)",
+                      "Різниця (high − low)"),
+  Оцінка          = round(c(p_low, p_high, diff_hat), 4),
+  `95% CI нижня`  = round(c(stats_low$ci_l,  stats_high$ci_l,  ci_diff_l), 4),
+  `95% CI верхня` = round(c(stats_low$ci_u,  stats_high$ci_u,  ci_diff_u), 4),
+  `p-value`       = c(NA, NA, ifelse(p_value_A < 2.2e-16, "< 2.2e-16",
+                                     formatC(p_value_A, format = "e", digits = 2)))
+)
+```
+# 4. Таблиця в Plots
+```{r}
+tbl_A <- tableGrob(
+  result_table %>% mutate(across(everything(), as.character)),
+  rows = NULL,
+  theme = ttheme_minimal(
+    core    = list(fg_params = list(fontsize = 11),
+                   bg_params = list(fill = c("white", "#F5F5F5"),
+                                    col  = "grey80")),
+    colhead = list(fg_params = list(fontsize = 12, fontface = "bold"),
+                   bg_params = list(fill = "#E3F2FD", col = "grey80"))
+  )
+)
+
+grid.newpage()
+grid.draw(
+  arrangeGrob(
+    textGrob("Результати Wald test: частка тяжких ДТП",
+             gp = gpar(fontsize = 13, fontface = "bold")),
+    tbl_A,
+    ncol = 1, heights = c(0.15, 0.85)
+  )
+)
+```
+# 5. Графік
+```{r}
+plot_data <- bind_rows(stats_low, stats_high) %>%
+  mutate(group = factor(group,
+                        levels = c("Low (≤30 км/год)", "High (≥60 км/год)")))
+
+ggplot(plot_data, aes(x = group, y = p_hat, color = group)) +
+  geom_col(aes(fill = group), alpha = 0.25, width = 0.5, color = NA) +
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin = ci_l, ymax = ci_u),
+                width = 0.12, linewidth = 0.9) +
+  geom_text(aes(label = sprintf("%.1f%%", p_hat * 100)),
+            vjust = -1.6, size = 4.5, fontface = "bold") +
+  annotate("segment",
+           x = 1, xend = 2, y = 0.38, yend = 0.38,
+           linewidth = 0.7, color = "grey40") +
+  annotate("text",
+           x = 1.5, y = 0.395,
+           label = sprintf("Δ = +%.1f п.п., p < 2.2e-16", diff_hat * 100),
+           size = 3.8, color = "grey20") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, 0.43)) +
+  scale_color_manual(values = c("Low (≤30 км/год)"  = "#065F46",
+                                "High (≥60 км/год)" = "#F57F17")) +
+  scale_fill_manual(values  = c("Low (≤30 км/год)"  = "#065F46",
+                                "High (≥60 км/год)" = "#F57F17")) +
+  labs(x = "Група ліміту швидкості",
+       y = "Частка тяжких ДТП (Fatal + Serious)") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position    = "none",
+        plot.title         = element_text(face = "bold"),
+        panel.grid.major.x = element_blank())
+```
+# ЧАСТИНА B: Bootstrap CI для Spearman кореляції
+
+# 1. Підготовка даних
+```{r}
+df_boot <- df_speed %>%
+  filter(!is.na(number_of_casualties)) %>%
+  select(speed_limit, number_of_casualties)
+
+n <- nrow(df_boot)
+cat(sprintf("Повний датасет: %d рядків.\n", n))
+```
+# 2. Точкова оцінка
+```{r}
+rho_hat <- cor(df_boot$speed_limit,
+               df_boot$number_of_casualties,
+               method = "spearman")
+
+cat(sprintf("Точкова оцінка Spearman rho = %.4f\n", rho_hat))
+```
+# 3. Nested Bootstrap (B=2000, b_inner=25)
+```{r}
+set.seed(37)
+B       <- 2000
+b_inner <- 25
+
+boot_rhos <- numeric(B)
+boot_t    <- numeric(B)
+
+cat(sprintf("\nПочинаємо bootstrap (B=%d, b_inner=%d)...\n", B, b_inner))
+
+for (i in 1:B) {
+  idx_out      <- sample(n, replace = TRUE)
+  x_out        <- df_boot$speed_limit[idx_out]
+  y_out        <- df_boot$number_of_casualties[idx_out]
+  rho_out      <- cor(x_out, y_out, method = "spearman")
+  boot_rhos[i] <- rho_out
+  
+  inner_rhos <- numeric(b_inner)
+  for (j in 1:b_inner) {
+    idx_in        <- sample(n, replace = TRUE)
+    inner_rhos[j] <- cor(x_out[idx_in], y_out[idx_in], method = "spearman")
+  }
+  
+  se_inner  <- sd(inner_rhos)
+  boot_t[i] <- (rho_out - rho_hat) / se_inner
+  
+  if (i %% 200 == 0) cat(sprintf("  %d / %d\n", i, B))
+}
+
+boot_se <- sd(boot_rhos)
+cat(sprintf("\nBootstrap SE = %.6f\n", boot_se))
+```
+# 4. Чотири методи CI
+```{R}
+ci_perc    <- quantile(boot_rhos, c(0.025, 0.975))
+ci_basic   <- c(2 * rho_hat - ci_perc[2], 2 * rho_hat - ci_perc[1])
+ci_norm    <- c(rho_hat - qnorm(0.975) * boot_se,
+                rho_hat + qnorm(0.975) * boot_se)
+t_q        <- quantile(boot_t, c(0.025, 0.975), na.rm = TRUE)
+ci_student <- c(rho_hat - t_q[2] * boot_se,
+                rho_hat - t_q[1] * boot_se)
+```
+# 5. Wald test H0: rho = 0
+```{R}
+T_rho     <- rho_hat / boot_se
+p_value_B <- 2 * pnorm(-abs(T_rho))
+
+cat(sprintf("Wald test H0: rho = 0\nT = %.4f\np-value = %.2e\n", T_rho, p_value_B))
+
+```
+# 6. Таблиці в Plots
+```{R}
+summary_table <- tibble(
+  Статистика = c("Spearman rho", "Bootstrap SE",
+                 "T-статистика", "p-value (двост.)"),
+  Значення   = c(round(rho_hat, 4),
+                 round(boot_se, 6),
+                 round(T_rho,  4),
+                 ifelse(p_value_B < 2.2e-16, "< 2.2e-16",
+                        formatC(p_value_B, format = "e", digits = 2)))
+)
+
+ci_table <- tibble(
+  Метод           = c("Percentile", "Basic (Pivotal)",
+                      "Normal (Wald + boot SE)", "Studentized (Nested)"),
+  `95% CI нижня`  = round(c(ci_perc[1], ci_basic[1],
+                            ci_norm[1], ci_student[1]), 4),
+  `95% CI верхня` = round(c(ci_perc[2], ci_basic[2],
+                            ci_norm[2], ci_student[2]), 4)
+)
+
+make_tbl <- function(data, header_fill) {
+  tableGrob(data, rows = NULL,
+            theme = ttheme_minimal(
+              core    = list(fg_params = list(fontsize = 11),
+                             bg_params = list(fill = c("white", "#F5F5F5"),
+                                              col = "grey80")),
+              colhead = list(fg_params = list(fontsize = 12, fontface = "bold"),
+                             bg_params = list(fill = header_fill, col = "grey80"))
+            )
+  )
+}
+
+grid.newpage()
+grid.draw(
+  arrangeGrob(
+    textGrob("Spearman кореляція: тест Волда",
+             gp = gpar(fontsize = 13, fontface = "bold")),
+    make_tbl(summary_table, "#FFF9C4"),
+    textGrob("Bootstrap 95% CI (4 методи)",
+             gp = gpar(fontsize = 13, fontface = "bold")),
+    make_tbl(ci_table, "#37474F") ,
+    ncol = 1, heights = c(0.08, 0.35, 0.08, 0.35)
+  )
+)
+```
+# 7. Графік bootstrap розподілу
+```{R}
+ggplot(data.frame(rho = boot_rhos), aes(x = rho)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 60, fill = "#90CAF9", color = "white") +
+  geom_density(color = "#1565C0", linewidth = 1) +
+  geom_vline(xintercept = rho_hat,
+             color = "#1565C0", linewidth = 1) +
+  geom_vline(xintercept = ci_perc[1],
+             color = "#F44336", linewidth = 0.8, linetype = "dashed") +
+  geom_vline(xintercept = ci_perc[2],
+             color = "#F44336", linewidth = 0.8, linetype = "dashed") +
+  annotate("text", x = rho_hat + 0.0005, y = Inf,
+           label = sprintf("rho = %.4f", rho_hat),
+           vjust = 2, hjust = 0, size = 3.8,
+           color = "#1565C0", fontface = "bold") +
+  labs(subtitle = sprintf("n = %d | B = %d | 95%% CI: [%.4f, %.4f]",
+                          n, B, ci_perc[1], ci_perc[2]),
+       x       = "Bootstrap Spearman rho*",
+       y       = "Щільність",
+       caption = "Червоні лінії — межі 95% Percentile CI") +
+  theme_minimal(base_size = 13) +
+  theme(plot.subtitle = element_text(color = "grey40"))
+
+```
+# ДОДАТОК: Wald test T-junction vs Roundabout
+```{R}
+df_junction <- df %>%
+  filter(str_detect(tolower(junction_detail),
+                    "roundabout|t or staggered")) %>%
+  mutate(junction_clean = ifelse(
+    str_detect(tolower(junction_detail), "roundabout"),
+    "Roundabout", "T-junction"))
+
+n_r <- sum(df_junction$junction_clean == "Roundabout")
+n_t <- sum(df_junction$junction_clean == "T-junction")
+x_r <- sum(df_junction$severe[df_junction$junction_clean == "Roundabout"])
+x_t <- sum(df_junction$severe[df_junction$junction_clean == "T-junction"])
+
+p_r      <- x_r / n_r
+p_t      <- x_t / n_t
+diff_est <- p_t - p_r
+se_diff  <- sqrt(p_t*(1-p_t)/n_t + p_r*(1-p_r)/n_r)
+ci_lo    <- diff_est - 1.96 * se_diff
+ci_hi    <- diff_est + 1.96 * se_diff
+T_junc   <- diff_est / se_diff
+p_val    <- pnorm(T_junc, lower.tail = FALSE)
+
+df_app <- data.frame(
+  "Показник" = c("p̂_T-junction", "p̂_Roundabout",
+                 "Різниця p̂_T − p̂_round", "95% CI різниці", "p-value"),
+  "Значення" = c(
+    sprintf("%.4f (%.1f%%)", p_t, p_t*100),
+    sprintf("%.4f (%.1f%%)", p_r, p_r*100),
+    sprintf("%+.4f (%+.2f п.п.)", diff_est, diff_est*100),
+    sprintf("[%.4f ; %.4f]", ci_lo, ci_hi),
+    ifelse(p_val < 0.001, "< 0.001", sprintf("%.4f", p_val))
+  ), check.names = FALSE)
+
+grid.newpage()
+grid.arrange(
+  textGrob("Додаток: Wald Test — H₁: p_T-junction > p_Roundabout",
+           gp = gpar(fontsize = 13, fontface = "bold", col = "#6A0DAD")),
+  tableGrob(df_app, rows = NULL,
+            theme = ttheme_default(
+              core    = list(bg_params = list(fill = c("#F3E8FF", "#FAF5FF"))),
+              colhead = list(bg_params = list(fill = "#7B2FBE"),
+                             fg_params = list(col = "white", fontface = "bold"))
+            )
+  ),
+  textGrob(ifelse(p_val < 0.05,
+                  "Відхиляємо H₀ — різниця статистично значуща",
+                  "Не відхиляємо H₀"),
+           gp = gpar(col = ifelse(p_val < 0.05, "#4A235A", "#B71C1C"),
+                     fontface = "bold", fontsize = 11)),
+  ncol = 1, heights = c(0.15, 0.7, 0.15)
+)
+```
