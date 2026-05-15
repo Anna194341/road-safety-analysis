@@ -1,0 +1,581 @@
+---
+title: "Spatial analysis: Urban vs Rural"
+author: "Anna Sak"
+output: html_document
+---
+
+У цьому блоці перевіряється, чи відрізняється тяжкість наслідків ДТП між міською та сільською місцевістю.
+
+Основна увага приділяється не загальній кількості ДТП, а **частці тяжких наслідків серед уже зафіксованих ДТП із постраждалими**. Це важливо, оскільки використаний датасет містить лише *personal injury collisions*, тобто ДТП, у яких був щонайменше один постраждалий. ДТП без постраждалих у цьому наборі даних не представлені.
+
+Тому результати цього блоку не показують загальний ризик потрапити в ДТП у місті чи селі. Вони показують, чи серед ДТП із постраждалими сільські аварії частіше мають тяжкі наслідки.
+
+## Підготовка середовища
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(scales)
+
+format_p_scientific <- function(p, digits = 3) {
+  format(
+    p,
+    scientific = TRUE,
+    digits = digits,
+    trim = TRUE
+  )
+}
+
+format_log_p_scientific <- function(log_p, digits = 3) {
+  vapply(
+    log_p,
+    function(lp) {
+      if (is.na(lp)) {
+        return(NA_character_)
+      }
+
+      log10_p <- lp / log(10)
+      exponent <- floor(log10_p)
+      mantissa <- 10^(log10_p - exponent)
+
+      paste0(signif(mantissa, digits), "e", exponent)
+    },
+    character(1)
+  )
+}
+```
+
+## Зчитування очищеного датасету
+
+У роботі використовується очищений датасет, підготовлений у межах EDA / ЛР1.
+
+```{r load-data, message=FALSE}
+df <- readr::read_csv(
+  "../../data/processed/collisions_2024_cleaned.csv",
+  show_col_types = FALSE
+)
+```
+
+## Папка для графіків
+
+```{r plot-folder}
+plot_dir <- "../../plots/inference/02_spatial_urban_rural"
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Підготовка даних
+
+Для аналізу створюємо змінну `severe`, яка дорівнює `TRUE`, якщо ДТП має категорію `Fatal` або `Serious`.
+
+Також залишаємо лише спостереження з визначеним типом місцевості: `Urban` або `Rural`.
+
+```{r prepare-spatial-data}
+df_spatial <- df %>%
+  mutate(
+    severe = collision_severity %in% c("Fatal", "Serious")
+  ) %>%
+  filter(
+    urban_or_rural_area %in% c("Urban", "Rural"),
+    !is.na(number_of_casualties)
+  ) %>%
+  mutate(
+    urban_or_rural_area = factor(
+      urban_or_rural_area,
+      levels = c("Urban", "Rural")
+    )
+  )
+
+df_spatial %>%
+  count(urban_or_rural_area)
+```
+
+# 1. Частка тяжких ДТП у Urban та Rural
+
+## 1.1 Описова таблиця
+
+Спочатку порівняємо кількість ДТП, кількість тяжких ДТП та частку тяжких ДТП у міській і сільській місцевості.
+
+```{r area-summary}
+area_summary <- df_spatial %>%
+  group_by(urban_or_rural_area) %>%
+  summarise(
+    n = n(),
+    severe_n = sum(severe, na.rm = TRUE),
+    severe_rate = severe_n / n,
+    .groups = "drop"
+  )
+
+area_summary
+```
+
+## 1.2 95% довірчі інтервали для часток
+
+Для кожної групи побудуємо 95% довірчий інтервал для частки тяжких ДТП.
+
+```{r area-ci}
+area_ci <- area_summary %>%
+  rowwise() %>%
+  mutate(
+    prop_test = list(prop.test(severe_n, n, correct = FALSE)),
+    ci_low = prop_test$conf.int[1],
+    ci_high = prop_test$conf.int[2]
+  ) %>%
+  ungroup() %>%
+  select(-prop_test)
+
+area_ci_report <- area_ci %>%
+  mutate(
+    severe_rate = percent(severe_rate, accuracy = 0.1),
+    ci = paste0(
+      percent(ci_low, accuracy = 0.1),
+      " – ",
+      percent(ci_high, accuracy = 0.1)
+    )
+  ) %>%
+  select(
+    area = urban_or_rural_area,
+    n,
+    severe_n,
+    severe_rate,
+    ci
+  )
+
+area_ci_report
+```
+
+## 1.3 Формулювання гіпотези
+
+Перевіряємо, чи частка тяжких ДТП у сільській місцевості є вищою, ніж у міській. Основним параметром для перевірки є різниця часток:
+
+$$
+p_{rural} - p_{urban}
+$$
+
+де $p_{rural}$ — частка тяжких ДТП серед ДТП із постраждалими у сільській місцевості, а $p_{urban}$ — відповідна частка у міській місцевості.
+
+Гіпотези формулюємо так:
+
+$$
+H_0: p_{rural} - p_{urban} \le 0
+$$
+
+$$
+H_1: p_{rural} - p_{urban} > 0
+$$
+
+Тобто нульова гіпотеза означає, що частка тяжких ДТП у `Rural` не є вищою, ніж в `Urban`. Альтернативна гіпотеза відповідає припущенню, що в `Rural` частка тяжких ДТП є вищою.
+
+## 1.4 Основний ефект: різниця часток і тест гіпотези
+
+Для перевірки сформульованої гіпотези використовується асимптотичний тест для порівняння двох пропорцій, реалізований через `prop.test()`.
+
+Оскільки дослідницька гіпотеза має напрям $p_{rural} - p_{urban} > 0$, p-value беремо з одностороннього тесту. Для змістовної інтерпретації ефекту також подаємо оцінку різниці часток і двосторонній 95% довірчий інтервал для цієї різниці.
+
+```{r prop-difference-test}
+x_rural <- area_summary$severe_n[area_summary$urban_or_rural_area == "Rural"]
+n_rural <- area_summary$n[area_summary$urban_or_rural_area == "Rural"]
+
+x_urban <- area_summary$severe_n[area_summary$urban_or_rural_area == "Urban"]
+n_urban <- area_summary$n[area_summary$urban_or_rural_area == "Urban"]
+
+# Односторонній тест для гіпотези: Rural > Urban
+prop_test_rural_urban <- prop.test(
+  x = c(x_rural, x_urban),
+  n = c(n_rural, n_urban),
+  alternative = "greater",
+  correct = FALSE
+)
+
+# Двосторонній 95% CI для змістовної інтерпретації різниці часток
+prop_ci_rural_urban <- prop.test(
+  x = c(x_rural, x_urban),
+  n = c(n_rural, n_urban),
+  alternative = "two.sided",
+  correct = FALSE
+)
+
+p_rural <- x_rural / n_rural
+p_urban <- x_urban / n_urban
+diff_prop <- p_rural - p_urban
+
+effect_prop_table <- tibble(
+  comparison = "Rural - Urban",
+  p_rural = p_rural,
+  p_urban = p_urban,
+  difference = diff_prop,
+  ci_low = prop_ci_rural_urban$conf.int[1],
+  ci_high = prop_ci_rural_urban$conf.int[2],
+  p_value = prop_test_rural_urban$p.value
+)
+
+effect_prop_report <- effect_prop_table %>%
+  mutate(
+    p_rural = percent(p_rural, accuracy = 0.1),
+    p_urban = percent(p_urban, accuracy = 0.1),
+    difference = percent(difference, accuracy = 0.1),
+    ci = paste0(
+      percent(ci_low, accuracy = 0.1),
+      " – ",
+      percent(ci_high, accuracy = 0.1)
+    ),
+    p_value = format_p_scientific(p_value, digits = 3)
+  ) %>%
+  select(
+    comparison,
+    p_rural,
+    p_urban,
+    difference,
+    ci,
+    p_value
+  )
+
+effect_prop_report
+```
+
+У таблиці `difference` показує оцінену різницю часток $p_{rural} - p_{urban}$, `ci` — 95% довірчий інтервал для цієї різниці, а `p_value` — результат одностороннього тесту для гіпотези $p_{rural} - p_{urban} > 0$.
+
+## 1.5 Risk ratio та 95% довірчий інтервал за дельта-методом
+
+Додатково розрахуємо risk ratio:
+
+$$
+RR = \frac{p_{rural}}{p_{urban}}
+$$
+
+Цей показник не є окремим тестом, а використовується як міра розміру ефекту. Він показує, у скільки разів частка тяжких ДТП у `Rural` більша або менша, ніж в `Urban`.
+
+Оскільки $RR$ є нелінійною функцією від двох оцінених часток, 95% довірчий інтервал будуємо на логарифмічній шкалі. Для цього використовується дельта-метод: спочатку будуємо інтервал для $\log(RR)$, а потім переводимо межі назад через експоненту.
+
+```{r risk-ratio-ci}
+risk_ratio <- p_rural / p_urban
+
+se_log_rr <- sqrt(
+  (1 / x_rural) - (1 / n_rural) +
+  (1 / x_urban) - (1 / n_urban)
+)
+
+rr_ci_low <- exp(log(risk_ratio) - qnorm(0.975) * se_log_rr)
+rr_ci_high <- exp(log(risk_ratio) + qnorm(0.975) * se_log_rr)
+
+risk_ratio_table <- tibble(
+  comparison = "Rural / Urban",
+  risk_ratio = risk_ratio,
+  ci_low = rr_ci_low,
+  ci_high = rr_ci_high
+)
+
+risk_ratio_report <- risk_ratio_table %>%
+  mutate(
+    risk_ratio = round(risk_ratio, 3),
+    ci = paste0(
+      round(ci_low, 3),
+      " – ",
+      round(ci_high, 3)
+    )
+  ) %>%
+  select(comparison, risk_ratio, ci)
+
+risk_ratio_report
+```
+
+Для risk ratio окреме p-value не розраховується, оскільки це не додаткова гіпотеза, а інтерпретаційна міра ефекту. Основна гіпотеза вже перевірена через різницю часток.
+
+## 1.6 Графік частки тяжких ДТП із довірчими інтервалами
+
+Для візуалізації результату використовуємо стовпчикову діаграму з 95% довірчими інтервалами. Такий формат наочно показує оцінену частку тяжких ДТП у кожній групі та невизначеність цієї оцінки.
+
+```{r plot-severe-rate}
+p_area <- ggplot(area_ci, aes(x = urban_or_rural_area, y = severe_rate)) +
+  geom_col(width = 0.55, fill = "#2C7FB8", alpha = 0.85) +
+  geom_errorbar(
+    aes(ymin = ci_low, ymax = ci_high),
+    width = 0.15,
+    linewidth = 0.8,
+    color = "black"
+  ) +
+  geom_text(
+    aes(label = percent(severe_rate, accuracy = 0.1)),
+    vjust = -1.2,
+    size = 4
+  ) +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 1),
+    limits = c(0, max(area_ci$ci_high) + 0.06)
+  ) +
+  labs(
+    title = "Rural ДТП мають вищу частку тяжких наслідків",
+    subtitle = "Частка Fatal або Serious серед ДТП",
+    x = "Тип місцевості",
+    y = "Частка тяжких ДТП"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+p_area
+```
+
+```{r save-severe-rate-plot, echo=FALSE}
+ggsave(
+  filename = file.path(plot_dir, "urban_rural_severe_rate_ci.png"),
+  plot = p_area,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+```
+
+## 1.7 Висновок до першої перевірки
+
+Отримані результати показують, що частка тяжких ДТП у сільській місцевості є вищою, ніж у міській. У `Rural` частка ДТП категорій `Fatal` або `Serious` становить приблизно 29.6%, тоді як в `Urban` — приблизно 22.5%.
+
+Різниця часток становить близько 7.1 процентних пунктів, а 95% довірчий інтервал для цієї різниці повністю лежить вище нуля. Значення p-value дорівнює `r effect_prop_report$p_value[1]`, тому нульову гіпотезу $H_0: p_{rural} - p_{urban} \le 0$ відхиляємо.
+
+Risk ratio дорівнює приблизно 1.32. Це означає, що серед ДТП із постраждалими частка тяжких наслідків у сільській місцевості приблизно в 1.32 раза вища, ніж у міській. 95% довірчий інтервал для risk ratio також повністю лежить вище 1, що узгоджується з результатом основного тесту.
+
+# 2. Середня кількість постраждалих у Urban та Rural
+
+Цей аналіз є додатковим. Він перевіряє не категорію тяжкості ДТП, а середню кількість постраждалих на одну ДТП із постраждалими.
+
+Оскільки в датасеті кожна ДТП уже має щонайменше одного постраждалого, цей аналіз не перевіряє наявність постраждалих як таку. Він порівнює масштаб наслідків ДТП у `Rural` та `Urban`.
+
+## 2.1 Описова таблиця
+
+Спочатку порівняємо основні описові характеристики змінної `number_of_casualties` для `Urban` та `Rural`.
+
+```{r casualties-summary}
+casualties_summary <- df_spatial %>%
+  group_by(urban_or_rural_area) %>%
+  summarise(
+    n = n(),
+    mean_casualties = mean(number_of_casualties, na.rm = TRUE),
+    median_casualties = median(number_of_casualties, na.rm = TRUE),
+    sd_casualties = sd(number_of_casualties, na.rm = TRUE),
+    max_casualties = max(number_of_casualties, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(casualties_summary, width = Inf)
+```
+
+## 2.2 Формулювання гіпотези
+
+Перевіряємо, чи середня кількість постраждалих на одну ДТП із постраждалими у `Rural` є більшою, ніж в `Urban`.
+
+$$
+H_0: \mu_{rural} - \mu_{urban} \le 0
+$$
+
+$$
+H_1: \mu_{rural} - \mu_{urban} > 0
+$$
+
+де $\mu$ — середня кількість постраждалих на одну ДТП із постраждалими.
+
+## 2.3 Тест Волда для різниці середніх
+
+Для порівняння середньої кількості постраждалих використано тест Волда для різниці середніх. Основним параметром є різниця:
+
+$$
+\mu_{rural} - \mu_{urban}
+$$
+
+Стандартну похибку різниці середніх обчислюємо без припущення про рівність дисперсій у групах `Urban` та `Rural`:
+
+$$
+SE =
+\sqrt{
+\frac{s^2_{rural}}{n_{rural}} +
+\frac{s^2_{urban}}{n_{urban}}
+}
+$$
+
+Оскільки обидві групи мають дуже великий розмір вибірки, використовується асимптотичне нормальне наближення.
+
+```{r casualties-wald-test}
+mean_stats <- df_spatial %>%
+  group_by(urban_or_rural_area) %>%
+  summarise(
+    n = n(),
+    mean_casualties = mean(number_of_casualties, na.rm = TRUE),
+    var_casualties = var(number_of_casualties, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+n_rural_mean <- mean_stats$n[mean_stats$urban_or_rural_area == "Rural"]
+n_urban_mean <- mean_stats$n[mean_stats$urban_or_rural_area == "Urban"]
+
+mean_rural <- mean_stats$mean_casualties[mean_stats$urban_or_rural_area == "Rural"]
+mean_urban <- mean_stats$mean_casualties[mean_stats$urban_or_rural_area == "Urban"]
+
+var_rural <- mean_stats$var_casualties[mean_stats$urban_or_rural_area == "Rural"]
+var_urban <- mean_stats$var_casualties[mean_stats$urban_or_rural_area == "Urban"]
+
+diff_mean <- mean_rural - mean_urban
+
+se_diff_mean <- sqrt(
+  var_rural / n_rural_mean +
+  var_urban / n_urban_mean
+)
+
+z_stat <- diff_mean / se_diff_mean
+
+# Одностороння альтернатива: Rural > Urban
+log_p_value_mean <- pnorm(z_stat, lower.tail = FALSE, log.p = TRUE)
+
+ci_low_mean <- diff_mean - qnorm(0.975) * se_diff_mean
+ci_high_mean <- diff_mean + qnorm(0.975) * se_diff_mean
+
+mean_test_report <- tibble(
+  comparison = "Rural - Urban",
+  mean_rural = mean_rural,
+  mean_urban = mean_urban,
+  difference = diff_mean,
+  ci_low = ci_low_mean,
+  ci_high = ci_high_mean,
+  log_p_value = log_p_value_mean
+) %>%
+  mutate(
+    across(
+      c(mean_rural, mean_urban, difference, ci_low, ci_high),
+      ~ round(.x, 3)
+    ),
+    ci = paste0(ci_low, " – ", ci_high),
+    p_value = format_log_p_scientific(log_p_value, digits = 3)
+  ) %>%
+  select(
+    comparison,
+    mean_rural,
+    mean_urban,
+    difference,
+    ci,
+    p_value
+  )
+
+mean_test_report
+```
+
+У таблиці наведено оцінку середніх для `Rural` та `Urban`, різницю середніх, 95% довірчий інтервал для цієї різниці та p-value для односторонньої альтернативи $\mu_{rural} - \mu_{urban} > 0$.
+
+## 2.4 Графік середньої кількості постраждалих із довірчими інтервалами
+
+Для візуалізації середніх у кожній групі побудуємо 95% довірчі інтервали на основі нормального наближення.
+
+```{r plot-casualties}
+casualties_ci <- df_spatial %>%
+  group_by(urban_or_rural_area) %>%
+  summarise(
+    n = n(),
+    mean_casualties = mean(number_of_casualties, na.rm = TRUE),
+    sd_casualties = sd(number_of_casualties, na.rm = TRUE),
+    se = sd_casualties / sqrt(n),
+    ci_low = mean_casualties - qnorm(0.975) * se,
+    ci_high = mean_casualties + qnorm(0.975) * se,
+    .groups = "drop"
+  )
+
+p_casualties <- ggplot(
+  casualties_ci,
+  aes(x = urban_or_rural_area, y = mean_casualties)
+) +
+  geom_col(width = 0.55, fill = "#2C7FB8", alpha = 0.85) +
+  geom_errorbar(
+    aes(ymin = ci_low, ymax = ci_high),
+    width = 0.15,
+    linewidth = 0.8,
+    color = "black"
+  ) +
+  geom_text(
+    aes(label = round(mean_casualties, 2)),
+    vjust = -1.2,
+    size = 4
+  ) +
+  scale_y_continuous(
+    limits = c(0, max(casualties_ci$ci_high) + 0.15)
+  ) +
+  labs(
+    title = "У Rural вища середня кількість постраждалих на одну ДТП",
+    subtitle = "Порівняння середнього number_of_casualties для Urban та Rural",
+    x = "Тип місцевості",
+    y = "Середня кількість постраждалих на одну ДТП"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+p_casualties
+```
+
+```{r save-casualties-plot, echo=FALSE}
+ggsave(
+  filename = file.path(plot_dir, "urban_rural_mean_casualties_ci.png"),
+  plot = p_casualties,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+```
+
+## 2.5 Розподіл кількості постраждалих
+
+Оскільки `number_of_casualties` має правосторонньо скошений розподіл, окремо покажемо розподіл кількості постраждалих у `Urban` та `Rural`. Цей графік не є окремим тестом, а допомагає пояснити, чому результат другої перевірки слід інтерпретувати обережно.
+
+```{r plot-casualties-distribution}
+p_casualties_box <- ggplot(
+  df_spatial,
+  aes(x = urban_or_rural_area, y = number_of_casualties)
+) +
+  geom_boxplot(
+    width = 0.5,
+    fill = "#2C7FB8",
+    alpha = 0.75,
+    outlier.alpha = 0.18,
+    outlier.size = 1
+  ) +
+  labs(
+    title = "Розподіл кількості постраждалих зміщений вправо",
+    subtitle = "Медіана в обох групах дорівнює 1, але у Rural помітніший правий хвіст",
+    x = "Тип місцевості",
+    y = "Кількість постраждалих на одну ДТП"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+p_casualties_box
+```
+
+```{r save-casualties-boxplot, echo=FALSE}
+ggsave(
+  filename = file.path(plot_dir, "urban_rural_casualties_distribution.png"),
+  plot = p_casualties_box,
+  width = 9,
+  height = 7,
+  dpi = 300
+)
+```
+
+## 2.6 Висновок до другої перевірки
+
+Додатковий аналіз показує, що середня кількість постраждалих на одну ДТП із постраждалими у `Rural` також є вищою, ніж в `Urban`. У `Rural` середнє становить приблизно 1.42 постраждалого на одну ДТП, тоді як в `Urban` — приблизно 1.20.
+
+Різниця середніх становить приблизно 0.219 постраждалого на одну ДТП, а 95% довірчий інтервал для цієї різниці становить приблизно 0.208–0.229. Значення p-value тесту Волда дорівнює `r mean_test_report$p_value[1]`, тому нульову гіпотезу $H_0: \mu_{rural} - \mu_{urban} \le 0$ відхиляємо.
+
+Водночас цей результат слід інтерпретувати обережно: медіана кількості постраждалих в обох групах дорівнює 1, а відмінність проявляється переважно через більший правий хвіст розподілу в `Rural`. Тому основним результатом блоку залишається порівняння частки тяжких ДТП.
+
+# Загальний висновок
+
+У межах просторового блоку було перевірено два аспекти тяжкості наслідків ДТП у міській та сільській місцевості.
+
+По-перше, основна перевірка показала, що серед ДТП із постраждалими частка тяжких наслідків у `Rural` статистично вища, ніж в `Urban`. Різниця становить приблизно 7.1 процентних пунктів, а risk ratio дорівнює приблизно 1.32. Довірчий інтервал для risk ratio також лежить вище 1, що підтверджує вищу відносну частку тяжких наслідків у `Rural`.
+
+По-друге, додаткове порівняння кількості постраждалих також показало вищу середню кількість постраждалих на одну ДТП у `Rural`. Однак цей результат є допоміжним, оскільки розподіл `number_of_casualties` є скошеним, а медіана в обох групах однакова.
+
+Отримані результати узгоджуються з висновком ЛР1 про те, що сільські ДТП можуть мати тяжчі наслідки, навіть якщо загальна кількість ДТП у містах більша.
+
+Водночас ці результати не є причинно-наслідковими. Міська та сільська місцевість можуть відрізнятися за швидкісним режимом, типом дороги, освітленням, погодними умовами, інтенсивністю руху та іншими факторами. У межах ЛР2 перевіряється лише безумовний статистичний зв’язок між типом місцевості та тяжкістю наслідків ДТП.
