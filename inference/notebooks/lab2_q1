@@ -1,0 +1,263 @@
+---
+title: "lab2_q1"
+author: "Varvara"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(scales)
+
+df <- read_csv("../../data/processed/collisions_2024_cleaned.csv")
+
+df <- df |>
+  mutate(
+    hour = hour(time),
+    day_type = if_else(
+      day_of_week %in% c("Saturday", "Sunday"),
+      "Weekend", "Weekday"
+    ),
+    time_period = case_when(
+      hour %in% 0:4   ~ "Night (00-04)",
+      hour %in% 5:11  ~ "Morning (05-11)",
+      hour %in% 12:17 ~ "Afternoon (12-17)",
+      hour %in% 18:23 ~ "Evening (18-23)"
+    ) |> factor(levels = c("Night (00-04)", "Morning (05-11)",
+                           "Afternoon (12-17)", "Evening (18-23)")),
+    severe   = collision_severity %in% c("Fatal", "Serious"),
+    is_night = hour %in% 0:4
+  )
+
+n   <- nrow(df)
+z95 <- qnorm(0.975)
+```
+
+```{r chi2_test}
+ct <- table(df$time_period, df$day_type)
+
+cat("=== Таблиця частот: time_period × day_type ===\n")
+print(ct)
+
+cat("\n=== Таблиця часток (по стовпцях) ===\n")
+print(round(prop.table(ct, margin = 2), 4))
+
+chi_res <- chisq.test(ct)
+cat("\n=== χ²-тест: time_period × day_type ===\n")
+cat(sprintf("χ² = %.4f   df = %d   p = %.2e\n",
+            chi_res$statistic, chi_res$parameter, chi_res$p.value))
+
+cramers_v <- sqrt(chi_res$statistic /
+                  (n * (min(nrow(ct), ncol(ct)) - 1)))
+cat(sprintf("Cramér's V = %.4f\n", cramers_v))
+cat("Інтерпретація V: <0.1 слабкий, 0.1–0.3 помірний, >0.3 сильний\n")
+
+cat("\n=== Стандартизовані залишки (|z| > 2 → значуще відхилення) ===\n")
+print(round(chi_res$stdres, 3))
+```
+
+```{r wald_test}
+ci_prop <- function(x_logical, label) {
+  p  <- mean(x_logical)
+  n_ <- length(x_logical)
+  se <- sqrt(p * (1 - p) / n_)
+  cat(sprintf("\n--- %s ---\n", label))
+  cat(sprintf("n = %d   Частка = %.4f   SE = %.6f\n", n_, p, se))
+  cat(sprintf("Асимптотична дисперсія: p(1-p)/n = %.8f\n", p * (1 - p) / n_))
+  cat(sprintf("95%% ДІ: [%.4f, %.4f]\n", p - z95 * se, p + z95 * se))
+  invisible(c(p = p, se = se, n = n_,
+              lower = p - z95 * se, upper = p + z95 * se))
+}
+
+cat("=== Довірчі інтервали для часток тяжких ДТП ===\n")
+r_night <- ci_prop(df$severe[df$is_night],  "Нічні ДТП (00-04): частка тяжких")
+r_day   <- ci_prop(df$severe[!df$is_night], "Денні ДТП (05-23): частка тяжких")
+
+diff_p        <- r_night["p"] - r_day["p"]
+se_diff       <- sqrt(r_night["p"] * (1 - r_night["p"]) / r_night["n"] +
+                      r_day["p"]   * (1 - r_day["p"])   / r_day["n"])
+ci_diff_lower <- diff_p - z95 * se_diff
+ci_diff_upper <- diff_p + z95 * se_diff
+
+cat("\n=== Різниця часток: Night − Day ===\n")
+cat(sprintf("Оцінка = %.4f   SE = %.6f   95%% ДІ: [%.4f, %.4f]\n",
+            diff_p, se_diff, ci_diff_lower, ci_diff_upper))
+
+z_wald <- diff_p / se_diff
+p_wald <- pnorm(z_wald, lower.tail = FALSE)
+
+cat(sprintf("Wald Z = %.4f   p (одностороннє) = %.2e   Відкидаємо H0: %s\n",
+            z_wald, p_wald, ifelse(p_wald < 0.05, "ТАК", "НІ")))
+
+cat("\n=== Підсумкова таблиця: частки тяжких ДТП ===\n")
+summary_tab <- data.frame(
+  Група    = c("Night (00-04)", "Day (05-23)", "Night − Day"),
+  n        = c(r_night["n"], r_day["n"], NA),
+  Частка   = round(c(r_night["p"], r_day["p"], diff_p), 4),
+  CI_lower = round(c(r_night["lower"], r_day["lower"], ci_diff_lower), 4),
+  CI_upper = round(c(r_night["upper"], r_day["upper"], ci_diff_upper), 4),
+  p_value  = c(NA, NA, formatC(p_wald, format = "e", digits = 3))
+)
+print(summary_tab, row.names = FALSE)
+
+cat("\n=== p-value цього блоку для загальної таблиці ===\n")
+cat(sprintf("χ² (time_period × day_type): p = %.2e\n", chi_res$p.value))
+cat(sprintf("Wald (p_night > p_day):      p = %.2e\n", p_wald))
+```
+
+```{r plot1_heatmap}
+# Графік 1: Heatmap — кількість ДТП по годинах і днях тижня
+df |>
+  mutate(day_of_week = factor(day_of_week,
+    levels = c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"),
+    labels = c("Пн","Вт","Ср","Чт","Пт","Сб","Нд"))) |>
+  count(hour, day_of_week) |>
+  ggplot(aes(x = day_of_week, y = factor(hour), fill = n)) +
+  geom_tile(colour = "white", linewidth = 0.3) +
+  scale_fill_gradient(low = "#f7fbff", high = "#08306b",
+                      labels = comma, name = "К-ть ДТП") +
+  scale_y_discrete(limits = rev) +
+  labs(
+    title    = "Теплова карта: кількість ДТП по годинах і днях тижня",
+    subtitle = "Вечірній пік у будні (15–17 год), нічний пік у вихідні",
+    x = "День тижня", y = "Година доби"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid = element_blank())
+```
+
+```{r plot2_severity_bar}
+# Графік 2: частка тяжких ДТП по time_period і day_type з CI
+
+plot2_data <- df |>
+  group_by(time_period, day_type) |>
+  summarise(
+    n_total = n(),
+    n_severe = sum(severe),
+    .groups = "drop"
+  ) |>
+  mutate(
+    share = n_severe / n_total,
+    se    = sqrt(share * (1 - share) / n_total),
+    lower = share - z95 * se,
+    upper = share + z95 * se
+  )
+
+ggplot(plot2_data, aes(x = time_period, y = share, fill = day_type)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.6) +
+  geom_errorbar(
+    aes(ymin = lower, ymax = upper),
+    position = position_dodge(width = 0.7),
+    width = 0.25
+  ) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_fill_manual(
+    values = c("Weekday" = "#2166ac", "Weekend" = "#d6604d"),
+    name   = "Тип дня"
+  ) +
+  labs(
+    title    = "Частка тяжких ДТП (Fatal + Serious) по часових категоріях",
+    subtitle = "Нічний період має найвищу частку тяжких наслідків в обох групах",
+    x = "Час доби", y = "Частка тяжких ДТП"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "top")
+```
+
+```{r bootstrap_median}
+set.seed(42)
+B <- 5000
+
+hours_weekday <- df$hour[df$day_type == "Weekday"]
+hours_weekend <- df$hour[df$day_type == "Weekend"]
+
+boot_median_ci <- function(x, B = 5000, conf = 0.95) {
+  boot_medians <- replicate(B, median(sample(x, length(x), replace = TRUE)))
+  alpha <- (1 - conf) / 2
+  list(
+    estimate = median(x),
+    se       = sd(boot_medians),
+    lower    = quantile(boot_medians, alpha),
+    upper    = quantile(boot_medians, 1 - alpha),
+    boot_vec = boot_medians
+  )
+}
+
+res_wd <- boot_median_ci(hours_weekday, B)
+res_we <- boot_median_ci(hours_weekend, B)
+
+cat("=== Bootstrap (B =", B, "): медіана години доби ===\n\n")
+cat("Мотивація: медіана належить до статистик 2-го типу — асимптотична\n")
+cat("дисперсія залежить від невідомої щільності f(медіана), яку складно\n")
+cat("оцінити напряму. Бутстреп дозволяє уникнути цього припущення.\n\n")
+cat(sprintf(
+  "Будні:   медіана = %.1f год   SE = %.3f   95%% ДІ: [%.1f, %.1f]\n",
+  res_wd$estimate, res_wd$se, res_wd$lower, res_wd$upper
+))
+cat(sprintf(
+  "Вихідні: медіана = %.1f год   SE = %.3f   95%% ДІ: [%.1f, %.1f]\n",
+  res_we$estimate, res_we$se, res_we$lower, res_we$upper
+))
+```
+
+```{r plot3_bootstrap}
+set.seed(42)
+B <- 5000
+
+night_wd <- df$severe[df$is_night & df$day_type == "Weekday"]
+night_we <- df$severe[df$is_night & df$day_type == "Weekend"]
+
+cat(sprintf("n нічних ДТП: будні = %d, вихідні = %d\n",
+            length(night_wd), length(night_we)))
+
+boot_mean_ci <- function(x, B = 5000) {
+  boot_means <- replicate(B, mean(sample(x, length(x), replace = TRUE)))
+  list(
+    estimate = mean(x),
+    se       = sd(boot_means),
+    lower    = quantile(boot_means, 0.025),
+    upper    = quantile(boot_means, 0.975),
+    boot_vec = boot_means
+  )
+}
+
+res_wd <- boot_mean_ci(night_wd, B)
+res_we <- boot_mean_ci(night_we, B)
+
+cat("\n=== Bootstrap (B =", B, "): частка тяжких серед нічних ДТП ===\n\n")
+cat("Мотивація: будуємо bootstrap CI для частки як додаткову перевірку\n")
+cat("Wald-тесту. Бутстреп не потребує припущень про форму розподілу.\n\n")
+cat(sprintf("Будні:   частка = %.4f   SE = %.4f   95%% ДІ: [%.4f, %.4f]\n",
+            res_wd$estimate, res_wd$se, res_wd$lower, res_wd$upper))
+cat(sprintf("Вихідні: частка = %.4f   SE = %.4f   95%% ДІ: [%.4f, %.4f]\n",
+            res_we$estimate, res_we$se, res_we$lower, res_we$upper))
+
+tibble(
+  частка = c(res_wd$boot_vec, res_we$boot_vec),
+  group  = rep(c("Будні (нічні ДТП)", "Вихідні (нічні ДТП)"), each = B)
+) |>
+  ggplot(aes(x = частка, fill = group)) +
+  geom_histogram(bins = 40, alpha = 0.7,
+                 position = "identity", colour = "white") +
+  geom_vline(xintercept = res_wd$estimate,
+             colour = "#2166ac", linetype = "dashed", linewidth = 1) +
+  geom_vline(xintercept = res_we$estimate,
+             colour = "#d6604d", linetype = "dashed", linewidth = 1) +
+  scale_x_continuous(labels = percent_format(accuracy = 1)) +
+  scale_fill_manual(
+    values = c("Будні (нічні ДТП)"   = "#2166ac",
+               "Вихідні (нічні ДТП)" = "#d6604d"),
+    name = NULL
+  ) +
+  labs(
+    title    = "Bootstrap-розподіл частки тяжких нічних ДТП (B = 5000)",
+    subtitle = sprintf(
+      "Будні: %.1f%%  95%% ДІ [%.1f%%, %.1f%%]   |   Вихідні: %.1f%%  95%% ДІ [%.1f%%, %.1f%%]",
+      res_wd$estimate*100, res_wd$lower*100, res_wd$upper*100,
+      res_we$estimate*100, res_we$lower*100, res_we$upper*100),
+    x = "Частка тяжких ДТП", y = "Кількість бутстреп-вибірок"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "top")
+```
