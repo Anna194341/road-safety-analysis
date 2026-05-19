@@ -352,8 +352,28 @@ casualties_summary <- df_spatial %>%
     mean_casualties = mean(number_of_casualties, na.rm = TRUE),
     median_casualties = median(number_of_casualties, na.rm = TRUE),
     sd_casualties = sd(number_of_casualties, na.rm = TRUE),
-    max_casualties = max(number_of_casualties, na.rm = TRUE),
+    se = sd_casualties / sqrt(n),
+    ci_low = mean_casualties - qnorm(0.975) * se,
+    ci_high = mean_casualties + qnorm(0.975) * se,
     .groups = "drop"
+  ) %>%
+  mutate(
+    mean_casualties = round(mean_casualties, 3),
+    median_casualties = round(median_casualties, 3),
+    sd_casualties = round(sd_casualties, 3),
+    ci = paste0(
+      round(ci_low, 3),
+      " – ",
+      round(ci_high, 3)
+    )
+  ) %>%
+  select(
+    area = urban_or_rural_area,
+    n,
+    mean_casualties,
+    ci,
+    median_casualties,
+    sd_casualties
   )
 
 print(casualties_summary, width = Inf)
