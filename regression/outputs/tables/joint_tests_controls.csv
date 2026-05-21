@@ -1,0 +1,5 @@
+group,group_ukr,F_statistic,df_num,p_value,significant_5pct
+light_conditions,Умови освітлення,43.583360331322595,4,1.3219276960425531e-36,TRUE
+weather_conditions,Погодні умови,2.8944744636392308,7,0.0050350483617683005,TRUE
+road_surface_conditions,Стан поверхні дороги,1.5784934564590527,4,0.1769045171558844,FALSE
+road_type,Тип дорожнього полотна,134.40964949609116,4,9.817770092558258e-115,TRUE
