@@ -1,0 +1,4 @@
+model,hypothesis,df,chisq,p_value,significant
+speed_squared_model,speed_limit + speed_limit_sq = 0,2,245.898,0,***
+speed_squared_model,speed_limit_sq = 0,1,14.52,1.4e-4,***
+interaction_model,is_night + is_night:rural = 0,2,18.895,8e-5,***
