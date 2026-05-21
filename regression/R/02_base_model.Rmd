@@ -1,0 +1,106 @@
+---
+title: "ЛР №3. Регресійний аналіз ДТП"
+author: "Масленнікова Яна"
+output: html_notebook
+---
+
+Завантаження необхідних бібліотек
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(broom)
+```
+
+Створення папок для збереження результатів (якщо вони не існують)
+
+```{r}
+models_dir <- "../../regression/outputs/models"
+tables_dir <- "../../regression/outputs/tables"
+
+dir.create(models_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tables_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+Читання імпутованого датасету
+
+```{r}
+input_path <- "../../data/processed/model_data_imputed.csv"
+df_imputed <- read_csv(input_path, show_col_types = FALSE)
+```
+
+
+
+```{r}
+if (is.numeric(df_imputed$speed_limit)) {
+  df_imputed <- df_imputed %>% mutate(speed_limit = factor(speed_limit))
+}
+```
+
+Побудова базової OLS регресії
+
+```{r}
+base_model <- lm(
+  severe ~ is_night + rural + speed_limit, 
+  data = df_imputed
+)
+```
+
+Збереження повного об'єкта моделі в rds-файл
+
+```{r}
+saveRDS(base_model, file = file.path(models_dir, "base_model.rds"))
+cat("Повну модель успішно збережено у:", file.path(models_dir, "base_model.rds"), "\n")
+```
+
+Витягування результатів та фільтрація ключових коефіцієнтів
+
+```{r}
+model_coefs_raw <- broom::tidy(base_model)
+
+base_model_key_coefficients <- model_coefs_raw %>%
+  # Фільтрація змінних
+  filter(term %in% c("is_night", "rural") | str_detect(term, "^speed_limit")) %>%
+  
+  # Зміна назв стовпчиків
+  rename(
+    std_error_raw = std.error,
+    p_value_raw = p.value
+  ) %>%
+  mutate(model = "base_model") %>%
+  
+  # Інтерпретація
+  mutate(
+    est_pct = round(estimate * 100, 2),
+    
+    var_label = case_when(
+      term == "is_night" ~ "нічний час (0-4 години)",
+      term == "rural"    ~ "сільську місцевість",
+      TRUE               ~ paste0("ліміт швидкості (категорія ", str_remove(term, "speed_limit"), ")")
+    ),
+    
+    interpretation_note = case_when(
+      estimate > 0 ~ paste0("Зміна умов на ", var_label, " призводить до зростання ймовірності тяжкого ДТП на ", abs(est_pct), " в.п."),
+      estimate < 0 ~ paste0("Зміна умов на ", var_label, " призводить до зниження ймовірності тяжкого ДТП на ", abs(est_pct), " в.п."),
+      TRUE         ~ paste0("Зміна умов на ", var_label, " не змінює ймовірність тяжкого ДТП")
+    )
+  ) %>%
+  
+  # Фінальні стовпчики
+  select(
+    model, 
+    term, 
+    estimate, 
+    std_error_raw, 
+    p_value_raw, 
+    interpretation_note
+  )
+
+# Виведення результату
+print(base_model_key_coefficients)
+
+# Збереження таблиці
+output_table_path <- file.path(tables_dir, "base_model_key_coefficients.csv")
+write_csv(base_model_key_coefficients, output_table_path)
+
+cat("\nТаблицю ключових коефіцієнтів успішно збережено у:", output_table_path, "\n")
+```
