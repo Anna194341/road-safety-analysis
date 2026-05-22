@@ -70,14 +70,14 @@ ggplot(severity_by_speed, aes(x = speed_limit, y = pct_severe)) +
 
 
 high_speed_model <- lm(
-  severe ~ is_night + rural + speed_limit + high_speed_60 +
+  severe ~ is_night + rural + high_speed_60 +
     light_conditions + weather_conditions +
     road_surface_conditions + road_type + day_type,
   data = df
 )
 
 interaction_model <- lm(
-  severe ~ is_night * rural + speed_limit +
+  severe ~ is_night * rural + factor(speed_limit) +
     light_conditions + weather_conditions +
     road_surface_conditions + road_type + day_type,
   data = df
