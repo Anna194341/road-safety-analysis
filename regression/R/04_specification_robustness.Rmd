@@ -20,23 +20,23 @@ library(car)
 library(margins) 
 
 
-df_raw <- read_csv(here("data", "processed", "model_data_imputed.csv"))
-
+# ── 1. Дані ──────────────────────────────────────────────────
 df <- read_csv(here("data", "processed", "model_data_imputed.csv")) |>
   mutate(
-    is_weekend     = as.integer(day_type == "Weekend"),
-    speed_limit_sq = speed_limit^2,
-    high_speed_50  = as.integer(speed_limit >= 50),
-    high_speed_60  = as.integer(speed_limit >= 60),
-    night_x_rural  = is_night * rural
+    is_weekend    = as.integer(day_type == "Weekend"),
+    high_speed_50 = as.integer(speed_limit >= 50),
+    high_speed_60 = as.integer(speed_limit >= 60),
+    night_x_rural = is_night * rural
   )
 
 cat("N після очищення:", nrow(df), "\n")
 cat("Частка severe:", round(mean(df$severe) * 100, 1), "%\n")
 
+# ── 2. controls_model від ролі 3 ─────────────────────────────
 controls_model <- readRDS(here("regression", "outputs", "models", "controls_model.rds"))
+cat("controls_model завантажено\n")
 
-
+# ── 3. Графіки нелінійності ──────────────────────────────────
 severity_by_hour <- df |>
   group_by(hour) |>
   summarise(pct_severe = mean(severe), n = n(), .groups = "drop")
@@ -65,18 +65,14 @@ ggplot(severity_by_speed, aes(x = speed_limit, y = pct_severe)) +
   scale_y_continuous(labels = scales::percent) +
   labs(
     title = "Частка тяжких ДТП за обмеженням швидкості",
-    subtitle = "LOESS явно нелінійний → виправдовує speed² у моделях M5/M6",
+    subtitle = "LOESS нелінійний — мотивує high_speed_60 як бінарну альтернативу",
     x = "Speed limit (mph)", y = "Частка severe", size = "К-ть ДТП"
   ) +
   theme_minimal()
 
-
-speed_squared_model <- glm(
-  severe ~ is_night + rural + speed_limit + speed_limit_sq +
-    light_conditions + weather_conditions +
-    road_surface_conditions + road_type + day_type,
-  data = df, family = binomial("logit")
-)
+# ── 4. Дві специфікації ──────────────────────────────────────
+# speed_limit у controls_model — категоріальна (factor)
+# тому speed^2 не використовується
 
 high_speed_model <- glm(
   severe ~ is_night + rural + speed_limit + high_speed_60 +
@@ -92,31 +88,25 @@ interaction_model <- glm(
   data = df, family = binomial("logit")
 )
 
-cat("Всі три моделі оцінено.\n")
+cat("Обидві моделі оцінено.\n")
 
-
+# ── 5. HC1 похибки ────────────────────────────────────────────
 hc_se <- function(model) coeftest(model, vcov = vcovHC(model, type = "HC1"))
 
-cat("\n=== speed_squared_model ===\n"); print(hc_se(speed_squared_model))
-cat("\n=== high_speed_model ===\n");    print(hc_se(high_speed_model))
-cat("\n=== interaction_model ===\n");   print(hc_se(interaction_model))
+cat("\n=== high_speed_model ===\n")
+print(hc_se(high_speed_model))
 
+cat("\n=== interaction_model ===\n")
+print(hc_se(interaction_model))
 
-cat("\n=== Joint test: speed_limit + speed_limit_sq = 0 ===\n")
-jt_speed_sq <- linearHypothesis(
-  speed_squared_model,
-  c("speed_limit = 0", "speed_limit_sq = 0"),
-  vcov = vcovHC(speed_squared_model, type = "HC1")
+# ── 6. Joint tests ────────────────────────────────────────────
+cat("\n=== Joint test: high_speed_60 = 0 ===\n")
+jt_high_speed <- linearHypothesis(
+  high_speed_model,
+  "high_speed_60 = 0",
+  vcov = vcovHC(high_speed_model, type = "HC1")
 )
-print(jt_speed_sq)
-
-cat("\n=== Joint test: speed_limit_sq = 0 (нелінійність) ===\n")
-jt_speed_sq_only <- linearHypothesis(
-  speed_squared_model,
-  "speed_limit_sq = 0",
-  vcov = vcovHC(speed_squared_model, type = "HC1")
-)
-print(jt_speed_sq_only)
+print(jt_high_speed)
 
 cat("\n=== Joint test: is_night + is_night:rural = 0 ===\n")
 jt_night <- linearHypothesis(
@@ -125,21 +115,26 @@ jt_night <- linearHypothesis(
   vcov = vcovHC(interaction_model, type = "HC1")
 )
 print(jt_night)
-ame_speed_sq   <- margins(speed_squared_model, vcov = vcovHC(speed_squared_model, "HC1"))
-ame_high_speed <- margins(high_speed_model,    vcov = vcovHC(high_speed_model,    "HC1"))
-ame_interact   <- margins(interaction_model,   vcov = vcovHC(interaction_model,   "HC1"))
 
-cat("\n=== AME: speed_squared_model ===\n"); print(summary(ame_speed_sq))
-cat("\n=== AME: high_speed_model ===\n");    print(summary(ame_high_speed))
-cat("\n=== AME: interaction_model ===\n");   print(summary(ame_interact))
+# ── 7. AME ───────────────────────────────────────────────────
+ame_high_speed <- margins(high_speed_model, vcov = vcovHC(high_speed_model, "HC1"))
+ame_interact   <- margins(interaction_model, vcov = vcovHC(interaction_model, "HC1"))
 
+cat("\n=== AME: high_speed_model ===\n")
+print(summary(ame_high_speed))
+
+cat("\n=== AME: interaction_model ===\n")
+print(summary(ame_interact))
+
+# Графік AME — тільки ключові змінні
 ame_df <- summary(ame_interact) |>
   as_tibble() |>
+  filter(factor %in% c("is_night", "rural", "day_typeWeekend", "speed_limit")) |>
   mutate(factor_label = dplyr::recode(factor,
-    "is_night"      = "Ніч (00–04)",
-    "is_weekend"    = "Вихідний день",
-    "rural"         = "Сільська місцевість",
-    "speed_limit"   = "Speed limit"
+    "is_night"        = "Ніч (00–04)",
+    "rural"           = "Сільська місцевість",
+    "day_typeWeekend" = "Вихідний день",
+    "speed_limit"     = "Speed limit"
   ))
 
 ggplot(ame_df, aes(x = reorder(factor_label, AME), y = AME)) +
@@ -150,15 +145,14 @@ ggplot(ame_df, aes(x = reorder(factor_label, AME), y = AME)) +
   scale_y_continuous(labels = scales::percent) +
   labs(
     title = "Маржинальні ефекти (AME) — interaction_model",
-    subtitle = "Середній вплив кожного фактора на P(severe ДТП)",
+    subtitle = "Середній вплив ключових факторів на P(severe ДТП)",
     x = NULL, y = "AME (у відсоткових пунктах)"
   ) +
   theme_minimal(base_size = 12)
 
-
+# ── 8. Таблиця коефіцієнтів ──────────────────────────────────
 extract_key_coefs <- function(model, model_name, key_terms) {
   ct_mat <- coeftest(model, vcov = vcovHC(model, type = "HC1"))
-
   ct_df <- tibble(
     term      = rownames(ct_mat),
     estimate  = ct_mat[, 1],
@@ -166,7 +160,6 @@ extract_key_coefs <- function(model, model_name, key_terms) {
     z_value   = ct_mat[, 3],
     p_value   = ct_mat[, 4]
   )
-
   ct_df |>
     filter(term %in% key_terms) |>
     transmute(
@@ -185,13 +178,11 @@ extract_key_coefs <- function(model, model_name, key_terms) {
     )
 }
 
-key_terms <- c("is_night", "rural", "speed_limit_sq",
-               "high_speed_60", "is_night:rural")
+key_terms <- c("is_night", "rural", "high_speed_60", "is_night:rural")
 
 robustness_coefs <- bind_rows(
-  extract_key_coefs(speed_squared_model, "speed_squared_model", key_terms),
-  extract_key_coefs(high_speed_model,    "high_speed_model",    key_terms),
-  extract_key_coefs(interaction_model,   "interaction_model",   key_terms)
+  extract_key_coefs(high_speed_model,  "high_speed_model",  key_terms),
+  extract_key_coefs(interaction_model, "interaction_model", key_terms)
 )
 
 write_csv(robustness_coefs,
@@ -199,7 +190,7 @@ write_csv(robustness_coefs,
 cat("\nЗбережено: robustness_key_coefficients.csv\n")
 print(robustness_coefs)
 
-
+# ── 9. Таблиця joint tests ───────────────────────────────────
 extract_jt <- function(jt_result, hypothesis_label, model_name) {
   tibble(
     model       = model_name,
@@ -217,9 +208,8 @@ extract_jt <- function(jt_result, hypothesis_label, model_name) {
 }
 
 joint_tests_robustness <- bind_rows(
-  extract_jt(jt_speed_sq,      "speed_limit + speed_limit_sq = 0", "speed_squared_model"),
-  extract_jt(jt_speed_sq_only, "speed_limit_sq = 0",               "speed_squared_model"),
-  extract_jt(jt_night,         "is_night + is_night:rural = 0",    "interaction_model")
+  extract_jt(jt_high_speed, "high_speed_60 = 0",            "high_speed_model"),
+  extract_jt(jt_night,      "is_night + is_night:rural = 0", "interaction_model")
 )
 
 write_csv(joint_tests_robustness,
@@ -227,17 +217,14 @@ write_csv(joint_tests_robustness,
 cat("\nЗбережено: joint_tests_robustness.csv\n")
 print(joint_tests_robustness)
 
-
-saveRDS(speed_squared_model,
-        here("regression", "outputs", "models", "speed_squared_model.rds"))
+# ── 10. Збереження моделей ───────────────────────────────────
 saveRDS(high_speed_model,
         here("regression", "outputs", "models", "high_speed_model.rds"))
 saveRDS(interaction_model,
         here("regression", "outputs", "models", "interaction_model.rds"))
 
-cat("\nЗбережено: speed_squared_model.rds\n")
-cat("Збережено: high_speed_model.rds\n")
+cat("\nЗбережено: high_speed_model.rds\n")
 cat("Збережено: interaction_model.rds\n")
-
+cat("\n========== РОЛЬ 4 ЗАВЕРШЕНА ==========\n")
 ```
 
