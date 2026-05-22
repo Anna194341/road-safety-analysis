@@ -34,6 +34,7 @@ cat("Частка severe:", round(mean(df$severe) * 100, 1), "%\n")
 controls_model <- readRDS(here("regression", "outputs", "models", "controls_model.rds"))
 cat("controls_model завантажено\n")
 
+
 severity_by_hour <- df |>
   group_by(hour) |>
   summarise(pct_severe = mean(severe), n = n(), .groups = "drop")
@@ -68,21 +69,22 @@ ggplot(severity_by_speed, aes(x = speed_limit, y = pct_severe)) +
   theme_minimal()
 
 
-high_speed_model <- glm(
+high_speed_model <- lm(
   severe ~ is_night + rural + speed_limit + high_speed_60 +
     light_conditions + weather_conditions +
     road_surface_conditions + road_type + day_type,
-  data = df, family = binomial("logit")
+  data = df
 )
 
-interaction_model <- glm(
+interaction_model <- lm(
   severe ~ is_night * rural + speed_limit +
     light_conditions + weather_conditions +
     road_surface_conditions + road_type + day_type,
-  data = df, family = binomial("logit")
+  data = df
 )
 
 cat("Обидві моделі оцінено.\n")
+
 
 hc_se <- function(model) coeftest(model, vcov = vcovHC(model, type = "HC1"))
 
@@ -92,6 +94,7 @@ print(hc_se(high_speed_model))
 cat("\n=== interaction_model ===\n")
 print(hc_se(interaction_model))
 
+
 cat("\n=== Joint test: high_speed_60 = 0 ===\n")
 jt_high_speed <- linearHypothesis(
   high_speed_model,
@@ -100,7 +103,7 @@ jt_high_speed <- linearHypothesis(
 )
 print(jt_high_speed)
 
-cat("\n=== Joint test: is_night + is_night:rural = 0 ===\n")
+cat("\n=== Joint test: is_night = 0 та is_night:rural = 0 ===\n")
 jt_night <- linearHypothesis(
   interaction_model,
   c("is_night = 0", "is_night:rural = 0"),
@@ -108,45 +111,13 @@ jt_night <- linearHypothesis(
 )
 print(jt_night)
 
-ame_high_speed <- margins(high_speed_model, vcov = vcovHC(high_speed_model, "HC1"))
-ame_interact   <- margins(interaction_model, vcov = vcovHC(interaction_model, "HC1"))
-
-cat("\n=== AME: high_speed_model ===\n")
-print(summary(ame_high_speed))
-
-cat("\n=== AME: interaction_model ===\n")
-print(summary(ame_interact))
-
-ame_df <- summary(ame_interact) |>
-  as_tibble() |>
-  filter(factor %in% c("is_night", "rural", "day_typeWeekend", "speed_limit")) |>
-  mutate(factor_label = dplyr::recode(factor,
-    "is_night"        = "Ніч (00–04)",
-    "rural"           = "Сільська місцевість",
-    "day_typeWeekend" = "Вихідний день",
-    "speed_limit"     = "Speed limit"
-  ))
-
-ggplot(ame_df, aes(x = reorder(factor_label, AME), y = AME)) +
-  geom_point(size = 3, color = "steelblue") +
-  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2, color = "steelblue") +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
-  coord_flip() +
-  scale_y_continuous(labels = scales::percent) +
-  labs(
-    title = "Маржинальні ефекти (AME) — interaction_model",
-    subtitle = "Середній вплив ключових факторів на P(severe ДТП)",
-    x = NULL, y = "AME (у відсоткових пунктах)"
-  ) +
-  theme_minimal(base_size = 12)
-
 extract_key_coefs <- function(model, model_name, key_terms) {
   ct_mat <- coeftest(model, vcov = vcovHC(model, type = "HC1"))
   ct_df <- tibble(
     term      = rownames(ct_mat),
     estimate  = ct_mat[, 1],
     std_error = ct_mat[, 2],
-    z_value   = ct_mat[, 3],
+    t_value   = ct_mat[, 3],
     p_value   = ct_mat[, 4]
   )
   ct_df |>
@@ -156,7 +127,7 @@ extract_key_coefs <- function(model, model_name, key_terms) {
       term          = term,
       estimate      = round(estimate, 4),
       std_error_hc1 = round(std_error, 4),
-      z_value       = round(z_value, 3),
+      t_value       = round(t_value, 3),
       p_value       = round(p_value, 4),
       significant   = case_when(
         p_value < 0.01 ~ "***",
@@ -179,31 +150,33 @@ write_csv(robustness_coefs,
 cat("\nЗбережено: robustness_key_coefficients.csv\n")
 print(robustness_coefs)
 
+
 extract_jt <- function(jt_result, hypothesis_label, model_name) {
   tibble(
     model       = model_name,
     hypothesis  = hypothesis_label,
     df          = jt_result$Df[2],
-    chisq       = round(jt_result$Chisq[2], 3),
-    p_value     = round(jt_result$`Pr(>Chisq)`[2], 5),
+    f_stat      = round(jt_result$F[2], 3),
+    p_value     = round(jt_result$`Pr(>F)`[2], 5),
     significant = case_when(
-      jt_result$`Pr(>Chisq)`[2] < 0.01 ~ "***",
-      jt_result$`Pr(>Chisq)`[2] < 0.05 ~ "**",
-      jt_result$`Pr(>Chisq)`[2] < 0.1  ~ "*",
+      jt_result$`Pr(>F)`[2] < 0.01 ~ "***",
+      jt_result$`Pr(>F)`[2] < 0.05 ~ "**",
+      jt_result$`Pr(>F)`[2] < 0.1  ~ "*",
       TRUE ~ ""
     )
   )
 }
 
 joint_tests_robustness <- bind_rows(
-  extract_jt(jt_high_speed, "high_speed_60 = 0",            "high_speed_model"),
-  extract_jt(jt_night,      "is_night + is_night:rural = 0", "interaction_model")
+  extract_jt(jt_high_speed, "high_speed_60 = 0",                 "high_speed_model"),
+  extract_jt(jt_night,      "is_night = 0 та is_night:rural = 0","interaction_model")
 )
 
 write_csv(joint_tests_robustness,
           here("regression", "outputs", "tables", "joint_tests_robustness.csv"))
 cat("\nЗбережено: joint_tests_robustness.csv\n")
 print(joint_tests_robustness)
+
 
 saveRDS(high_speed_model,
         here("regression", "outputs", "models", "high_speed_model.rds"))
