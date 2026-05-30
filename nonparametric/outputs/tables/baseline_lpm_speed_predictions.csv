@@ -1,0 +1,7 @@
+speed_limit_factor,rural_factor,road_type,first_road_class,light_conditions,weather_conditions,road_surface_conditions,day_type,hour_factor,police_force,pred_prob,se_robust,conf_low,conf_high
+20,Urban,Single carriageway,A,Daylight,Fine no high winds,Dry,Weekday,17,Metropolitan Police,0.17373652742260864,0.005963917193251695,0.16204724972383533,0.18542580512138196
+30,Urban,Single carriageway,A,Daylight,Fine no high winds,Dry,Weekday,17,Metropolitan Police,0.15951490584628703,0.006040719884020781,0.1476750948736063,0.17135471681896774
+40,Urban,Single carriageway,A,Daylight,Fine no high winds,Dry,Weekday,17,Metropolitan Police,0.19380218974384567,0.007753459605616624,0.17860540891683707,0.20899897057085426
+50,Urban,Single carriageway,A,Daylight,Fine no high winds,Dry,Weekday,17,Metropolitan Police,0.20352564173546467,0.00923567962269022,0.18542370967499183,0.2216275737959375
+60,Urban,Single carriageway,A,Daylight,Fine no high winds,Dry,Weekday,17,Metropolitan Police,0.24071291169795467,0.008163403260918783,0.22471264130655386,0.2567131820893555
+70,Urban,Single carriageway,A,Daylight,Fine no high winds,Dry,Weekday,17,Metropolitan Police,0.22928688409398018,0.011112103396356895,0.20750716143712067,0.2510666067508397
