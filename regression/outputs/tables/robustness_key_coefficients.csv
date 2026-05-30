@@ -1,0 +1,7 @@
+model,term,estimate,std_error_hc1,t_value,p_value,significant
+high_speed_model,is_night,0.0276,0.0072,3.839,1e-4,***
+high_speed_model,rural,0.0429,0.0037,11.599,0,***
+high_speed_model,high_speed_60,0.0581,0.0048,12.126,0,***
+interaction_model,is_night,0.034,0.0086,3.946,1e-4,***
+interaction_model,rural,0.0246,0.0041,5.961,0,***
+interaction_model,is_night:rural,-0.0165,0.0149,-1.104,0.2697,
