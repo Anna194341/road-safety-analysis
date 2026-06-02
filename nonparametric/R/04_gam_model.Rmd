@@ -1,0 +1,212 @@
+---
+title: "04 GAM Model"
+author: "Varvara"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r main}
+
+library(tidyverse)
+library(lubridate)
+library(here)
+library(mgcv)
+library(gratia)
+
+
+df_raw <- read_csv(here("data", "processed", "nonparametric_model_data.csv"))
+df <- df_raw |>
+  mutate(
+    severe  = as.integer(severe),
+    hour    = as.numeric(hour),
+    speed_f = factor(speed_limit),
+    day_type = factor(day_type)
+  ) |>
+  filter(!is.na(severe), !is.na(hour), !is.na(speed_limit))
+
+cat("N після очищення:", nrow(df), "\n")
+cat("Частка severe:", round(mean(df$severe) * 100, 1), "%\n")
+cat("Рівні speed_limit:", levels(df$speed_f), "\n")
+
+
+model_gam_space <- mgcv::gam(
+  severe ~ speed_f +
+    s(hour, bs = "cc", k = 12) +
+    s(longitude, latitude, k = 50) +
+    factor(rural) +
+    factor(road_type) +
+    factor(light_conditions) +
+    factor(weather_conditions) +
+    factor(road_surface_conditions) +
+    day_type,
+  family = binomial(),
+  data   = df,
+  method = "REML"
+)
+
+cat("\n=== GAM A (просторовий smooth) ===\n")
+summary(model_gam_space)
+
+if ("police_force" %in% names(df)) {
+  model_gam_police <- mgcv::gam(
+    severe ~ speed_f +
+      s(hour, bs = "cc", k = 12) +
+      factor(rural) +
+      factor(road_type) +
+      factor(light_conditions) +
+      factor(weather_conditions) +
+      factor(road_surface_conditions) +
+      day_type +
+      factor(police_force),
+    family = binomial(),
+    data   = df,
+    method = "REML"
+  )
+  cat("\n=== GAM B (police_force) ===\n")
+  summary(model_gam_police)
+} else {
+  cat("\npolice_force відсутній — GAM B пропущено\n")
+  model_gam_police <- NULL
+}
+
+most_common <- function(x) names(sort(table(x), decreasing = TRUE))[1]
+
+newdata_speed <- tibble(
+  speed_f                 = factor(levels(df$speed_f), levels = levels(df$speed_f)),
+  hour                    = median(df$hour, na.rm = TRUE),
+  longitude               = median(df$longitude, na.rm = TRUE),
+  latitude                = median(df$latitude, na.rm = TRUE),
+  rural                   = 0,
+  road_type               = most_common(df$road_type),
+  light_conditions        = most_common(df$light_conditions),
+  weather_conditions      = most_common(df$weather_conditions),
+  road_surface_conditions = most_common(df$road_surface_conditions),
+  day_type                = factor("Weekday", levels = levels(df$day_type))
+)
+
+pred_speed <- predict(
+  model_gam_space,
+  newdata = newdata_speed,
+  type    = "response",
+  se.fit  = TRUE
+)
+
+newdata_speed <- newdata_speed |>
+  mutate(
+    pred  = as.numeric(drop(pred_speed$fit)),
+    lower = as.numeric(pmax(drop(pred_speed$fit) - 1.96 * drop(pred_speed$se.fit), 0)),
+    upper = as.numeric(pmin(drop(pred_speed$fit) + 1.96 * drop(pred_speed$se.fit), 1))
+  )
+
+
+p_speed <- ggplot(newdata_speed, aes(x = speed_f, y = pred)) +
+  geom_col(fill = "steelblue", alpha = 0.8, width = 0.6) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2, color = "darkblue") +
+  geom_text(aes(label = scales::percent(pred, accuracy = 0.1)),
+            vjust = -0.5, size = 3.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 0.5)) +
+  labs(
+    title    = "Передбачена ймовірність тяжкого ДТП за speed_limit (GAM A)",
+    subtitle = "За інших рівних умов (медіанні значення контролів)",
+    x        = "Speed limit (mph)",
+    y        = "P(severe)"
+  ) +
+  theme_minimal(base_size = 12)
+
+print(p_speed)
+
+ggsave(
+  here("nonparametric", "outputs", "figures", "gam_speed_limit_predicted_probabilities.png"),
+  plot = p_speed, width = 10, height = 6, dpi = 150
+)
+
+p_hour <- gratia::draw(model_gam_space, select = "s(hour)") +
+  labs(
+    title    = "Smooth ефект години доби — GAM A",
+    subtitle = "Нелінійний вплив часу доби на log-odds тяжкого ДТП",
+    x        = "Година доби",
+    y        = "s(hour)"
+  ) +
+  theme_minimal(base_size = 12)
+
+print(p_hour)
+
+ggsave(
+  here("nonparametric", "outputs", "figures", "gam_hour_smooth.png"),
+  plot = p_hour, width = 10, height = 6, dpi = 150
+)
+
+p_spatial <- gratia::draw(model_gam_space, select = "s(longitude,latitude)") +
+  labs(
+    title    = "Просторовий smooth — GAM A",
+    subtitle = "Регіональні відмінності у тяжкості ДТП"
+  ) +
+  theme_minimal(base_size = 12)
+
+print(p_spatial)
+
+ggsave(
+  here("nonparametric", "outputs", "figures", "gam_spatial_smooth.png"),
+  plot = p_spatial, width = 10, height = 8, dpi = 150
+)
+
+pred_vec  <- as.numeric(drop(pred_speed$fit))
+lower_vec <- as.numeric(pmax(drop(pred_speed$fit) - 1.96 * drop(pred_speed$se.fit), 0))
+upper_vec <- as.numeric(pmin(drop(pred_speed$fit) + 1.96 * drop(pred_speed$se.fit), 1))
+
+gam_speed_predictions <- tibble(
+  speed_limit    = levels(df$speed_f),
+  predicted_prob = round(pred_vec, 4),
+  ci_lower       = round(lower_vec, 4),
+  ci_upper       = round(upper_vec, 4)
+)
+
+write_csv(
+  gam_speed_predictions,
+  here("nonparametric", "outputs", "tables", "gam_speed_limit_predictions.csv")
+)
+
+if (!is.null(model_gam_police)) {
+
+  newdata_police <- newdata_speed |>
+    mutate(police_force = most_common(df$police_force))
+
+  pred_police <- predict(
+    model_gam_police,
+    newdata = newdata_police,
+    type    = "response",
+    se.fit  = TRUE
+  )
+
+  comparison <- tibble(
+    speed_limit = levels(df$speed_f),
+    pred_gam_a  = round(as.numeric(drop(pred_speed$fit)), 4),
+    pred_gam_b  = round(as.numeric(drop(pred_police$fit)), 4),
+    diff        = round(as.numeric(drop(pred_police$fit)) - as.numeric(drop(pred_speed$fit)), 4)
+  )
+
+  write_csv(
+    comparison,
+    here("nonparametric", "outputs", "tables", "gam_model_comparison.csv")
+  )
+  cat("\nЗбережено: gam_model_comparison.csv\n")
+  print(comparison)
+
+} else {
+  cat("\nПорівняння пропущено — GAM B не побудовано\n")
+}
+
+saveRDS(model_gam_space,
+        here("nonparametric", "outputs", "models", "model_gam_space.rds"))
+cat("\nЗбережено: model_gam_space.rds\n")
+
+if (!is.null(model_gam_police)) {
+  saveRDS(model_gam_police,
+          here("nonparametric", "outputs", "models", "model_gam_police.rds"))
+  cat("Збережено: model_gam_police.rds\n")
+}
+```
