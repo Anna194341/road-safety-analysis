@@ -1,0 +1,279 @@
+---
+title: "ЛР №4 - Непараметрична регресія"
+author: "Масленнікова Яна"
+output: html_notebook
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(splines)
+```
+
+1. Завантаження очищеного датасету
+
+```{r}
+data_path <- "../../data/processed/nonparametric_model_data.csv"
+
+if (!file.exists(data_path)) {
+  stop(paste("Помилка: Файл", data_path, "не знайдено. Перевірте роботу Людини 1."))
+}
+
+# Завантажуємо та відсікаємо NA в severe
+model_data <- read_csv(data_path, show_col_types = FALSE) %>%
+  filter(!is.na(severe))
+
+cat("Кількість спостережень після видалення NA в severe:", nrow(model_data), "\n")
+```
+
+2. Підготовка матриці ознак для PCA (категоріальні -> dummy)
+
+```{r}
+target_features <- c(
+  "urban_or_rural_area", "rural_factor", "road_type", 
+  "first_road_class", "trunk_road_flag", "light_conditions", 
+  "weather_conditions", "road_surface_conditions", 
+  "junction_detail", "pedestrian_crossing"
+)
+
+# 1. Відбираємо ті, що є в наявності
+available_features <- target_features[target_features %in% colnames(model_data)]
+
+# 2. Захист від помилки "no levels": відбираємо лише ті, де є хоча б 2 унікальні значення
+valid_features <- c()
+for (col in available_features) {
+  unique_count <- model_data %>% pull(col) %>% na.omit() %>% unique() %>% length()
+  if (unique_count >= 2) {
+    valid_features <- c(valid_features, col)
+  } else {
+    cat("Пропущено змінну (має лише 1 рівень):", col, "\n")
+  }
+}
+
+cat("\nФінальні змінні для PCA:\n")
+print(valid_features)
+
+# Перетворюємо обрані змінні на фактори
+pca_data_prep <- model_data %>%
+  select(all_of(valid_features)) %>%
+  mutate(across(everything(), as.factor))
+
+# Формуємо формулу (без intercept) та будуємо dummy-матрицю
+formula_pca <- as.formula(paste("~ 0 +", paste(valid_features, collapse = " + ")))
+X_pca <- model.matrix(formula_pca, data = pca_data_prep)
+
+# Очищення від стовпців з нульовою дисперсією
+zero_var_cols <- which(apply(X_pca, 2, var, na.rm = TRUE) == 0)
+if (length(zero_var_cols) > 0) {
+  X_pca <- X_pca[, -zero_var_cols]
+}
+
+cat("Розмірність матриці X_pca для PCA:", dim(X_pca)[1], "рядків та", dim(X_pca)[2], "стовпчиків.\n")
+```
+
+3. Проведення PCA за допомогою prcomp
+
+```{r}
+pca_result <- prcomp(X_pca, center = TRUE, scale. = TRUE)
+cat("PCA успішно проведено!\n")
+```
+
+4. Розрахунок частки поясненої дисперсії та матриці навантажень
+
+```{r}
+pca_var <- pca_result$sdev^2
+pca_var_proportions <- pca_var / sum(pca_var)
+pca_cumulative_proportions <- cumsum(pca_var_proportions)
+
+explained_variance_df <- tibble(
+  Principal_Component = paste0("PC", 1:length(pca_var_proportions)),
+  Eigenvalue          = pca_var,
+  Variance_Proportion = pca_var_proportions,
+  Cumulative_Variance = pca_cumulative_proportions
+)
+
+loadings_matrix <- as.data.frame(pca_result$rotation[, 1:3]) %>%
+  rownames_to_column(var = "Feature") %>%
+  as_tibble()
+
+head(explained_variance_df)
+```
+
+5. Збереження результатів у CSV-файли
+
+```{r}
+dir.create("../../nonparametric/outputs/tables", recursive = TRUE, showWarnings = FALSE)
+
+write_csv(explained_variance_df, "../../nonparametric/outputs/tables/pca_explained_variance.csv")
+write_csv(loadings_matrix, "../../nonparametric/outputs/tables/pca_loadings.csv")
+
+cat("Таблиці PCA збережено.\n")
+```
+5. Додавання перших 3 головних компонент до основного датасету
+
+```{r}
+pc_scores <- as.data.frame(pca_result$x[, 1:3]) %>% 
+  as_tibble()
+
+model_data_with_pc <- bind_cols(model_data, pc_scores) %>%
+  mutate(speed_limit_factor = factor(speed_limit))
+```
+
+6. Побудова базової логістичної PC-моделі (GLM binomial)
+
+```{r}
+cat("Оцінюємо базову логістичну PC-модель...\n")
+
+pc_model_base <- glm(
+  severe ~ speed_limit_factor + PC1 + PC2 + PC3,
+  data = model_data_with_pc,
+  family = binomial(link = "logit")
+)
+
+summary(pc_model_base)
+```
+
+7. Побудова альтернативної моделі з гнучким контролем часу (натуральні сплайни)
+
+```{r}
+cat("Оцінюємо логістичну PC-модель зі сплайнами часу...\n")
+
+pc_model_splines <- glm(
+  severe ~ speed_limit_factor + PC1 + PC2 + PC3 + ns(hour, df = 5),
+  data = model_data_with_pc,
+  family = binomial(link = "logit")
+)
+
+summary(pc_model_splines)
+```
+
+8. Збереження моделей у .rds файли
+
+```{r}
+dir.create("../../nonparametric/outputs/models", recursive = TRUE, showWarnings = FALSE)
+
+saveRDS(pc_model_base, "../../nonparametric/outputs/models/pc_model_base.rds")
+saveRDS(pc_model_splines, "../../nonparametric/outputs/models/pc_model_splines.rds")
+
+cat("Моделі успішно збережено.\n")
+```
+
+9. Екстракція коефіцієнтів для factor(speed_limit) та збереження у CSV
+
+```{r}
+library(broom)
+
+extract_speed_limit_effects <- function(model, model_name) {
+  tidy(model) %>%
+    # Фільтруємо змінні, що стосуються обмеження швидкості
+    filter(str_detect(term, "speed_limit")) %>%
+    # Перейменовуємо колонки
+    rename(
+      Term = term,
+      Estimate = estimate,
+      Std_Error = std.error,
+      z_value = statistic,
+      p_value = p.value
+    ) %>%
+    # Витягуємо чисте число швидкості
+    mutate(
+      Model = model_name,
+      Speed_Limit_Category = str_extract(Term, "\\d+")
+    ) %>%
+    # Відбираємо фінальні стовпчики згідно з вимогами ЛР
+    select(Model, Speed_Limit_Category, Estimate, Std_Error, z_value, p_value)
+}
+
+# Об'єднуємо результати обох моделей
+speed_limit_results <- bind_rows(
+  extract_speed_limit_effects(pc_model_base, "Base PC Model"),
+  extract_speed_limit_effects(pc_model_splines, "PC Model with Time Splines")
+)
+
+# Записуємо у файл
+write_csv(speed_limit_results, "../../nonparametric/outputs/tables/pc_model_speed_limit_results.csv")
+
+cat("\nОсь результати:\n")
+print(speed_limit_results)
+```
+Графік 1: Кам'янистий осип (Scree Plot)
+
+```{r}
+scree_data <- explained_variance_df %>% head(10)
+
+ggplot(scree_data, aes(x = reorder(Principal_Component, Eigenvalue))) +
+  geom_col(aes(y = Variance_Proportion * 100, fill = "Індивідуальна"), alpha = 0.7) +
+  geom_line(aes(y = Cumulative_Variance * 100, group = 1, color = "Кумулятивна"), size = 1.2) +
+  geom_point(aes(y = Cumulative_Variance * 100, color = "Кумулятивна"), size = 3) +
+  scale_fill_manual(values = "#3498db") +
+  scale_color_manual(values = "#e74c3c") +
+  labs(
+    title = "Графік кам'янистого осипу (Scree Plot) для PCA",
+    x = "Головні компоненти",
+    y = "Пояснена дисперсія (%)",
+    fill = "Частка дисперсії:",
+    color = "Сумарна дисперсія:"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+ggsave("../../nonparametric/outputs/figures/pca_scree_plot.png", width = 8, height = 5, dpi = 300)
+```
+
+Графік 2: Розсіювання спостережень у просторі PC1 та PC2
+
+```{r}
+ggplot(model_data_with_pc, aes(x = PC1, y = PC2, color = factor(severe))) +
+  geom_point(alpha = 0.4, size = 1.5) +
+  scale_color_manual(
+    values = c("0" = "#2ecc71", "1" = "#e74c3c"), 
+    labels = c("0" = "Легкі ДТП", "1" = "Тяжкі ДТП")
+  ) +
+  labs(
+    title = "Розподіл спостережень у просторі PC1 та PC2",
+    x = "Перша головна компонента (PC1)",
+    y = "Друга головна компонента (PC2)",
+    color = "Тяжкість ДТП:"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+ggsave("../../nonparametric/outputs/figures/pc1_pc2_by_severe.png", width = 8, height = 6, dpi = 300)
+```
+
+Графік 3: Оцінені ефекти обмеження швидкості (PC Model with Time Splines)
+
+```{r}
+model_effects_data <- speed_limit_results %>%
+  filter(Model == "PC Model with Time Splines") %>%
+  mutate(
+    CI_Lower = Estimate - 1.96 * Std_Error,
+    CI_Upper = Estimate + 1.96 * Std_Error,
+    Speed_Limit_Category = factor(Speed_Limit_Category, levels = sort(as.numeric(unique(Speed_Limit_Category))))
+  )
+
+ggplot(model_effects_data, aes(x = Speed_Limit_Category, y = Estimate)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", size = 0.8) +
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper), width = 0.2, color = "#2c3e50", size = 0.9) +
+  geom_point(color = "#e67e22", size = 4) +
+  labs(
+    title = "Вплив обмеження швидкості на тяжкість ДТП",
+    subtitle = "Логістична регресія на головних компонентах (зі сплайнами часу)",
+    x = "Обмеження швидкості (км/год або миль/год)",
+    y = "Оцінка коефіцієнта (Log Odds) відносно базової категорії"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(italic = TRUE, hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+ggsave("../../nonparametric/outputs/figures/predicted_speed_limit_pc.png", width = 8, height = 5, dpi = 300)
+```
+
