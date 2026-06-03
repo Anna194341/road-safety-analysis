@@ -4,6 +4,8 @@ library(tidyverse)
 library(np)
 library(ggplot2)
 library(broom)
+library(sandwich)
+library(lmtest)
 
 
 # 1. Завантаження даних
@@ -30,7 +32,13 @@ df <- read_csv("data/processed/nonparametric_model_data.csv", show_col_types = F
 # 2. Завантаження базової LPM моделі
 baseline_model <- readRDS("nonparametric/outputs/models/model_baseline_lpm.rds")
 
-lpm_tidy_robust <- broom::tidy(baseline_model) %>%
+lpm_robust_test <- coeftest(baseline_model, vcov = vcovHC(baseline_model, type = "HC1"))
+
+lpm_tidy_robust <- as_tibble(lpm_robust_test[, , drop = FALSE], rownames = "term") %>%
+  rename(estimate = Estimate,
+         std.error = `Std. Error`,
+         statistic = `t value`,
+         p.value   = `Pr(>|t|)`) %>%
   filter(str_detect(term, "speed_limit_factor")) %>%
   mutate(model = "Базова LPM (Робастні SE)")
 
@@ -45,50 +53,30 @@ set.seed(2026)
 subset_size <- 8000                   
 subset_indices <- sort(sample(1:nrow(df), size = subset_size))
 
-bw_plm <- npplregbw(
-  formula = plm_formula,
-  data = df,
-  subset = subset_indices,
-  bwmethod = "cv.ls",
-  ckertype = "gaussian",
-  tol = 1e-4,
-  ftol = 1e-4
-)
-
-cat("Bandwidth для hour (непараметрична частина):", 
-    round(as.numeric(bw_plm$bw[[1]]$bw), 4), "\n")
-
-print(summary(bw_plm))
-
-cat("\n=== Крок 2: Оцінка PLM на повному датасеті ===\n")
-pl_model <- npplreg(bws = bw_plm, data = df)
-saveRDS(pl_model, "nonparametric/outputs/models/model_plm_person3.rds")
-cat("PLM модель оцінено!\n")
-
-# КРОК 3: Bootstrap SE
-cat("\n=== Крок 3: Bootstrap для SE ===\n")
-set.seed(2026)
-n_boot <- 150
-
-boot_coefs <- matrix(NA, nrow = n_boot, ncol = length(pl_model$xcoef))
-colnames(boot_coefs) <- names(pl_model$xcoef)
-
-pb <- txtProgressBar(min = 0, max = n_boot, style = 3)
-
-for(i in 1:n_boot) {
-  boot_idx <- sample(1:nrow(df), replace = TRUE)
-  boot_model <- tryCatch(
-    npplreg(bws = bw_plm, data = df[boot_idx, ]),
-    error = function(e) NULL
+if (file.exists("nonparametric/outputs/models/bw_plm.rds") &&
+    file.exists("nonparametric/outputs/models/model_plm_person3.rds")) {
+  cat("Завантаження збережених моделей...\n")
+  bw_plm   <- readRDS("nonparametric/outputs/models/bw_plm.rds")
+  pl_model <- readRDS("nonparametric/outputs/models/model_plm_person3.rds")
+} else {
+  bw_plm <- npplregbw(
+    formula  = plm_formula,
+    data     = df,
+    subset   = subset_indices,
+    bwmethod = "cv.ls",
+    ckertype = "gaussian",
+    tol      = 1e-4,
+    ftol     = 1e-4
   )
-  if (!is.null(boot_model)) {
-    boot_coefs[i, ] <- as.numeric(boot_model$xcoef)
-  }
-  setTxtProgressBar(pb, i)
+  saveRDS(bw_plm, "nonparametric/outputs/models/bw_plm.rds")  
+  
+  pl_model <- npplreg(bws = bw_plm, data = df)
+  saveRDS(pl_model, "nonparametric/outputs/models/model_plm_person3.rds")
 }
-close(pb)
 
-plm_se_boot <- apply(boot_coefs, 2, sd, na.rm = TRUE)
+cat("Bandwidth для hour (непараметрична частина):",
+    round(as.numeric(bw_plm$bw[[1]]$bw), 4), "\n")
+print(summary(bw_plm))
 
 # Підготовка результатів — xcoeferr 
 plm_results_clean <- tibble(
@@ -132,7 +120,119 @@ mode_values <- list(
   hour                    = as.numeric(get_mode(df$hour))
 )
 
-# Таблиця типових значень 
+# --- 1. hour_plot_df ---
+hour_grid    <- seq(0, 23, by = 0.25)
+modal_idx    <- which.max(!is.na(df$hour))
+
+hour_newdata <- df[rep(modal_idx, length(hour_grid)), ] %>%
+  mutate(
+    hour                    = hour_grid,
+    speed_limit_factor      = mode_values$speed_limit_factor,
+    rural_factor            = mode_values$rural_factor,
+    light_conditions        = mode_values$light_conditions,
+    weather_conditions      = mode_values$weather_conditions,
+    road_surface_conditions = mode_values$road_surface_conditions,
+    road_type               = mode_values$road_type,
+    first_road_class        = mode_values$first_road_class,
+    day_type                = mode_values$day_type,
+    police_force            = mode_values$police_force,
+    speed_30 = as.integer(as.numeric(as.character(mode_values$speed_limit_factor)) == 30),
+    speed_40 = as.integer(as.numeric(as.character(mode_values$speed_limit_factor)) == 40),
+    speed_50 = as.integer(as.numeric(as.character(mode_values$speed_limit_factor)) == 50),
+    speed_60 = as.integer(as.numeric(as.character(mode_values$speed_limit_factor)) == 60),
+    speed_70 = as.integer(as.numeric(as.character(mode_values$speed_limit_factor)) == 70)
+  )
+
+pred_hour_vals <- as.numeric(predict(pl_model, newdata = hour_newdata))
+
+# Апроксимація SE через щільність: Var(g_hat(x)) ≈ σ² * R(K) / (n * f(x) * h)
+# 2. Надійний розрахунок sigma_resid (навіть якщо $resid втрачено при завантаженні)
+sigma_resid <- tryCatch(sd(residuals(pl_model), na.rm = TRUE), error = function(e) NA)
+if (is.na(sigma_resid) || is.null(sigma_resid)) {
+  # Якщо залишки недоступні, беремо консервативну дисперсію самої змінної severe
+  sigma_resid <- sd(df$severe, na.rm = TRUE)
+}
+
+# 3. Надійне отримання bandwidth
+bw_hour <- tryCatch(as.numeric(bw_plm$bw[[1]]$bw), error = function(e) 1.24)
+if (is.na(bw_hour) || length(bw_hour) == 0) bw_hour <- 1.24 
+
+# 4. Обчислення щільності та SE
+hour_dens <- density(as.numeric(df$hour), bw = bw_hour, from = 0, to = 23, n = 512)
+f_hour    <- approx(hour_dens$x, hour_dens$y, xout = hour_grid, rule = 2)$y
+f_hour    <- pmax(f_hour, 1e-4)
+
+se_hour <- sqrt(sigma_resid^2 / (nrow(df) * f_hour * bw_hour))
+
+# 5. Формування датафрейму з обмеженням [0, 1]
+hour_plot_df <- tibble(
+  hour      = hour_grid,
+  prob      = pred_hour_vals,
+  conf_low  = pmax(prob - 1.96 * se_hour, 0),
+  conf_high = pmin(prob + 1.96 * se_hour, 1)
+)
+
+# --- 6. speed_plot_df ---
+speed_levels <- c(20, 30, 40, 50, 60, 70)
+
+speed_newdata <- df[rep(modal_idx, length(speed_levels)), ] %>%
+  mutate(
+    hour                    = as.numeric(mode_values$hour),
+    speed_limit_factor      = factor(speed_levels, levels = c(20,30,40,50,60,70)),
+    rural_factor            = mode_values$rural_factor,
+    light_conditions        = mode_values$light_conditions,
+    weather_conditions      = mode_values$weather_conditions,
+    road_surface_conditions = mode_values$road_surface_conditions,
+    road_type               = mode_values$road_type,
+    first_road_class        = mode_values$first_road_class,
+    day_type                = mode_values$day_type,
+    police_force            = mode_values$police_force,
+    speed_30 = as.integer(speed_levels == 30),
+    speed_40 = as.integer(speed_levels == 40),
+    speed_50 = as.integer(speed_levels == 50),
+    speed_60 = as.integer(speed_levels == 60),
+    speed_70 = as.integer(speed_levels == 70)
+  )
+
+pred_speed_vals <- as.numeric(predict(pl_model, newdata = speed_newdata))
+
+se_speed <- c(0, plm_results_clean$std.error[match(
+  c("speed_limit_factor30","speed_limit_factor40","speed_limit_factor50",
+    "speed_limit_factor60","speed_limit_factor70"),
+  plm_results_clean$term)])
+
+speed_plot_df <- tibble(
+  speed     = factor(speed_levels),
+  prob      = pred_speed_vals,
+  conf_low  = prob - 1.96 * se_speed,
+  conf_high = prob + 1.96 * se_speed
+)
+
+# --- 7. caterpillar_data ---
+make_cat <- function(tbl, model_name) {
+  tbl %>%
+    mutate(
+      conf.low  = estimate - 1.96 * std.error,
+      conf.high = estimate + 1.96 * std.error,
+      clean_term = case_when(
+        str_detect(term, "30") ~ "Ліміт: 30 mph",
+        str_detect(term, "40") ~ "Ліміт: 40 mph",
+        str_detect(term, "50") ~ "Ліміт: 50 mph",
+        str_detect(term, "60") ~ "Ліміт: 60 mph",
+        str_detect(term, "70") ~ "Ліміт: 70 mph",
+        TRUE ~ term
+      ),
+      model = model_name
+    )
+}
+
+caterpillar_data <- bind_rows(
+  make_cat(lpm_tidy_robust,   "Базова LPM (Робастні SE)"),
+  make_cat(plm_results_clean, "Частково лінійна PLM")
+)
+
+
+# 8 Таблиця типових значень 
 cat("\n=== Типові (модальні) значення контрольних змінних ===\n")
 mode_table <- tibble(
   `Змінна` = c("Швидкісний режим", "Тип місцевості", "Освітлення",
